@@ -6,9 +6,14 @@ jobs:
   fetch:
     runs-on: macos-15-intel
     steps:
-      - run: ls -la /usr/lib/swift/libswift_Concurrency.dylib && lipo -archs /usr/lib/swift/libswift_Concurrency.dylib
+      - run: |
+          DYLIB=$(find /Applications/Xcode*.app/Contents/Developer/Toolchains -name "libswift_Concurrency.dylib" 2>/dev/null | head -1)
+          echo "found: $DYLIB"
+          ls -la "$DYLIB"
+          lipo -archs "$DYLIB"
+          mkdir -p /tmp/dylib && cp "$DYLIB" /tmp/dylib/
       - uses: actions/upload-artifact@v4
         with:
           name: swift-concurrency-dylib
-          path: /usr/lib/swift/libswift_Concurrency.dylib
+          path: /tmp/dylib/libswift_Concurrency.dylib
           retention-days: 1
