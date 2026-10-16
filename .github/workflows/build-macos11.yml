@@ -1,0 +1,59 @@
+# macOS 11 兼容版云端构建。
+# 背景：本机是 macOS 11.7 + 弱 CPU（m3-6Y30），本地 release 构建要 30 分钟以上；
+# 且前端已做 Tailwind v4→v3 降级（见 src/index.css 注释）修复 Safari 14 WebView 布局坍塌。
+# 本工作流把构建搬到 GitHub Actions 的 Intel runner，MACOSX_DEPLOYMENT_TARGET=11.0 保证
+# 产物能跑在 macOS 11.7 上。触发：push 到 macos11-compat 分支，或手动 workflow_dispatch。
+name: build-macos11
+
+on:
+  push:
+    branches: [macos11-compat]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15-intel # Intel runner（macos-13 已弃用），产物为 x86_64-apple-darwin
+    timeout-minutes: 60
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin
+
+      # .npmrc 设了 ignore-scripts（本机 esbuild 官方二进制不支持 macOS 11；
+      # runner 上同样跳过 playwright 浏览器下载等无谓 postinstall）
+      - run: npm ci
+
+      # build:app:release 从 ~/.wb-switch/wb-switch-updater.key 读签名密钥，
+      # 这里生成一把一次性密钥（只用于本次 updater 产物签名，不影响 App 内嵌公钥）
+      - name: Generate throwaway updater key
+        run: npx tauri signer generate -w ~/.wb-switch/wb-switch-updater.key --password wb-switch-dev
+
+      # 完整链路：companion(npm ci + vite + cargo release) → 主前端 tsc+vite → tauri release → fix-app.sh
+      - name: Build app (release)
+        run: npm run build:app:release
+
+      - name: Verify deployment target
+        run: |
+          APP="target/release/bundle/macos/workbuddy-switch.app"
+          /usr/libexec/PlistBuddy -c "Print :LSMinimumSystemVersion" "$APP/Contents/Info.plist"
+          lipo -archs "$APP/Contents/MacOS/wb-switch-rust"
+
+      - name: Package app
+        run: |
+          cd target/release/bundle/macos
+          ditto -c -k --sequesterRsrc --keepParent workbuddy-switch.app workbuddy-switch-macos11.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: workbuddy-switch-macos11
+          path: target/release/bundle/macos/workbuddy-switch-macos11.zip
+          retention-days: 7

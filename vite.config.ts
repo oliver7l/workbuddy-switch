@@ -1,6 +1,5 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
-import tailwindcss from "@tailwindcss/vite";
 import path from "node:path";
 
 // @ts-expect-error process is a nodejs global
@@ -13,7 +12,7 @@ const base = process.env.VITE_PAGES_DEMO === "1" ? "/workbuddy-switch/" : "/";
 // https://vite.dev/config/
 export default defineConfig(async () => ({
   base,
-  plugins: [react(), tailwindcss()],
+  plugins: [react()],
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),

@@ -1,107 +1,203 @@
-@import "tailwindcss";
-@import "tw-animate-css";
-
-@custom-variant dark (&:is(.dark *));
+/*
+ * macOS 11.7（WKWebView = Safari 14.1）兼容版样式入口。
+ * 原版基于 Tailwind CSS 4：@layer / oklch / color-mix / @property 均需 Safari 15.4+，
+ * 老系统的 WebView 会整份丢弃 @layer 内的样式，导致布局坍塌。
+ * 现降级为 Tailwind v3 + PostCSS + autoprefixer，颜色全部转为 hex/rgba。
+ * 深色模式：src/lib/theme.ts 把 .dark 类挂在 <html> 上，
+ * 由 tailwind.config.js 的 darkMode: "class" 处理（与 v4 的 @custom-variant 等价）。
+ */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
 
 :root {
   color-scheme: light;
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.21 0.01 264);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.21 0.01 264);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.21 0.01 264);
-  --primary: oklch(0.725 0.133 163.03);
-  --primary-foreground: oklch(0.99 0.002 247.839);
-  --secondary: oklch(0.96 0.004 264);
-  --secondary-foreground: oklch(0.32 0.01 264);
-  --muted: oklch(0.96 0.004 264);
-  --muted-foreground: oklch(0.52 0.012 264);
-  --accent: oklch(0.955 0.004 264);
-  --accent-foreground: oklch(0.24 0.01 264);
-  --destructive: oklch(0.577 0.245 27.325);
-  --destructive-foreground: oklch(0.99 0.002 270);
-  --border: oklch(0.91 0.006 264);
-  --input: oklch(0.91 0.006 264);
-  --ring: oklch(0.725 0.133 163.03);
-  --brand: oklch(0.725 0.133 163.03);
-  --brand-foreground: oklch(0.985 0.002 247.839);
-  --chart-1: oklch(0.646 0.222 41.116);
-  --chart-2: oklch(0.6 0.118 184.704);
-  --chart-3: oklch(0.398 0.07 227.392);
-  --chart-4: oklch(0.828 0.189 84.429);
-  --chart-5: oklch(0.769 0.188 70.08);
+  --background: #ffffff;
+  --background-rgb: 255 255 255;
+  --foreground: #16181d;
+  --foreground-rgb: 22 24 29;
+  --card: #ffffff;
+  --card-rgb: 255 255 255;
+  --card-foreground: #16181d;
+  --card-foreground-rgb: 22 24 29;
+  --popover: #ffffff;
+  --popover-rgb: 255 255 255;
+  --popover-foreground: #16181d;
+  --popover-foreground-rgb: 22 24 29;
+  --primary: #42c08e;
+  --primary-rgb: 66 192 142;
+  --primary-foreground: #fbfcfd;
+  --primary-foreground-rgb: 251 252 253;
+  --secondary: #f0f2f4;
+  --secondary-rgb: 240 242 244;
+  --secondary-foreground: #303338;
+  --secondary-foreground-rgb: 48 51 56;
+  --muted: #f0f2f4;
+  --muted-rgb: 240 242 244;
+  --muted-foreground: #656970;
+  --muted-foreground-rgb: 101 105 112;
+  --accent: #eff0f3;
+  --accent-rgb: 239 240 243;
+  --accent-foreground: #1d1f24;
+  --accent-foreground-rgb: 29 31 36;
+  --destructive: #e7000b;
+  --destructive-rgb: 231 0 11;
+  --destructive-foreground: #fbfcfd;
+  --destructive-foreground-rgb: 251 252 253;
+  --border: #dfe1e5;
+  --border-rgb: 223 225 229;
+  --input: #dfe1e5;
+  --input-rgb: 223 225 229;
+  --ring: #42c08e;
+  --ring-rgb: 66 192 142;
+  --brand: #42c08e;
+  --brand-rgb: 66 192 142;
+  --brand-foreground: #f9fafb;
+  --brand-foreground-rgb: 249 250 251;
+  --chart-1: #f54900;
+  --chart-1-rgb: 245 73 0;
+  --chart-2: #009689;
+  --chart-2-rgb: 0 150 137;
+  --chart-3: #104e64;
+  --chart-3-rgb: 16 78 100;
+  --chart-4: #ffb900;
+  --chart-4-rgb: 255 185 0;
+  --chart-5: #fe9a00;
+  --chart-5-rgb: 254 154 0;
   --radius: 0.75rem;
-  --sidebar: oklch(0.973 0.003 264);
-  --sidebar-foreground: oklch(0.24 0.01 264);
-  --sidebar-primary: oklch(0.725 0.133 163.03);
-  --sidebar-primary-foreground: oklch(0.99 0.002 247.839);
-  --sidebar-accent: oklch(0.93 0.004 264);
-  --sidebar-accent-foreground: oklch(0.21 0.01 264);
-  --sidebar-border: oklch(0.91 0.006 264);
-  --sidebar-ring: oklch(0.725 0.133 163.03);
-  --data-series-emerald: oklch(0.62 0.13 163);
-  --data-series-teal: oklch(0.66 0.1 190);
-  --data-series-indigo: oklch(0.55 0.11 265);
-  --data-series-violet: oklch(0.63 0.11 300);
-  --data-series-amber: oklch(0.72 0.12 78);
-  --data-series-rose: oklch(0.64 0.12 20);
-  --data-series-sky: oklch(0.63 0.1 235);
-  --data-series-lime: oklch(0.67 0.11 125);
-  --data-series-orange: oklch(0.67 0.15 48);
-  --data-series-pink: oklch(0.72 0.13 350);
-  --data-series-cyan: oklch(0.55 0.09 205);
-  --data-series-slate: oklch(0.58 0.03 250);
+  --sidebar: #f5f6f8;
+  --sidebar-rgb: 245 246 248;
+  --sidebar-foreground: #1d1f24;
+  --sidebar-foreground-rgb: 29 31 36;
+  --sidebar-primary: #42c08e;
+  --sidebar-primary-rgb: 66 192 142;
+  --sidebar-primary-foreground: #fbfcfd;
+  --sidebar-primary-foreground-rgb: 251 252 253;
+  --sidebar-accent: #e6e8eb;
+  --sidebar-accent-rgb: 230 232 235;
+  --sidebar-accent-foreground: #16181d;
+  --sidebar-accent-foreground-rgb: 22 24 29;
+  --sidebar-border: #dfe1e5;
+  --sidebar-border-rgb: 223 225 229;
+  --sidebar-ring: #42c08e;
+  --sidebar-ring-rgb: 66 192 142;
+  --data-series-emerald: #139e6f;
+  --data-series-emerald-rgb: 19 158 111;
+  --data-series-teal: #33a6a0;
+  --data-series-teal-rgb: 51 166 160;
+  --data-series-indigo: #526fb2;
+  --data-series-indigo-rgb: 82 111 178;
+  --data-series-violet: #9379c2;
+  --data-series-violet-rgb: 147 121 194;
+  --data-series-amber: #ce9a43;
+  --data-series-amber-rgb: 206 154 67;
+  --data-series-rose: #cb6c6d;
+  --data-series-rose-rgb: 203 108 109;
+  --data-series-sky: #4492bd;
+  --data-series-sky-rgb: 68 146 189;
+  --data-series-lime: #86a152;
+  --data-series-lime-rgb: 134 161 82;
+  --data-series-orange: #dd7438;
+  --data-series-orange-rgb: 221 116 56;
+  --data-series-pink: #e181b0;
+  --data-series-pink-rgb: 225 129 176;
+  --data-series-cyan: #13808a;
+  --data-series-cyan-rgb: 19 128 138;
+  --data-series-slate: #6d7c8c;
+  --data-series-slate-rgb: 109 124 140;
 }
 
 .dark {
   color-scheme: dark;
-  --background: oklch(0.208 0.042 265.755);
-  --foreground: oklch(0.929 0.013 255.508);
-  --card: oklch(0.279 0.041 260.031);
-  --card-foreground: oklch(0.929 0.013 255.508);
-  --popover: oklch(0.279 0.041 260.031);
-  --popover-foreground: oklch(0.929 0.013 255.508);
-  --primary: oklch(0.696 0.17 162.48);
-  --primary-foreground: oklch(0.208 0.042 265.755);
-  --secondary: oklch(0.33 0.041 260.031);
-  --secondary-foreground: oklch(0.929 0.013 255.508);
-  --muted: oklch(0.33 0.041 260.031);
-  --muted-foreground: oklch(0.704 0.04 256.788);
-  --accent: oklch(0.33 0.041 260.031);
-  --accent-foreground: oklch(0.929 0.013 255.508);
-  --destructive: oklch(0.704 0.191 22.216);
-  --destructive-foreground: oklch(0.985 0.002 247.839);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.696 0.17 162.48);
-  --brand: oklch(0.696 0.17 162.48);
-  --brand-foreground: oklch(0.208 0.042 265.755);
-  --chart-1: oklch(0.488 0.243 264.376);
-  --chart-2: oklch(0.696 0.17 162.48);
-  --chart-3: oklch(0.769 0.188 70.08);
-  --chart-4: oklch(0.627 0.265 303.9);
-  --chart-5: oklch(0.645 0.246 16.439);
-  --sidebar: oklch(0.279 0.041 260.031);
-  --sidebar-foreground: oklch(0.929 0.013 255.508);
-  --sidebar-primary: oklch(0.696 0.17 162.48);
-  --sidebar-primary-foreground: oklch(0.208 0.042 265.755);
-  --sidebar-accent: oklch(0.279 0.041 260.031);
-  --sidebar-accent-foreground: oklch(0.929 0.013 255.508);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.696 0.17 162.48);
-  --data-series-emerald: oklch(0.73 0.13 163);
-  --data-series-teal: oklch(0.76 0.1 190);
-  --data-series-indigo: oklch(0.77 0.11 265);
-  --data-series-violet: oklch(0.78 0.11 300);
-  --data-series-amber: oklch(0.81 0.12 78);
-  --data-series-rose: oklch(0.77 0.12 20);
-  --data-series-sky: oklch(0.76 0.1 235);
-  --data-series-lime: oklch(0.78 0.11 125);
-  --data-series-orange: oklch(0.8 0.15 48);
-  --data-series-pink: oklch(0.79 0.12 350);
-  --data-series-cyan: oklch(0.75 0.09 205);
-  --data-series-slate: oklch(0.78 0.03 250);
+  --background: #0f172b;
+  --background-rgb: 15 23 43;
+  --foreground: #e2e8f0;
+  --foreground-rgb: 226 232 240;
+  --card: #1d293d;
+  --card-rgb: 29 41 61;
+  --card-foreground: #e2e8f0;
+  --card-foreground-rgb: 226 232 240;
+  --popover: #1d293d;
+  --popover-rgb: 29 41 61;
+  --popover-foreground: #e2e8f0;
+  --popover-foreground-rgb: 226 232 240;
+  --primary: #00bc7d;
+  --primary-rgb: 0 188 125;
+  --primary-foreground: #0f172b;
+  --primary-foreground-rgb: 15 23 43;
+  --secondary: #29364b;
+  --secondary-rgb: 41 54 75;
+  --secondary-foreground: #e2e8f0;
+  --secondary-foreground-rgb: 226 232 240;
+  --muted: #29364b;
+  --muted-rgb: 41 54 75;
+  --muted-foreground: #90a1b9;
+  --muted-foreground-rgb: 144 161 185;
+  --accent: #29364b;
+  --accent-rgb: 41 54 75;
+  --accent-foreground: #e2e8f0;
+  --accent-foreground-rgb: 226 232 240;
+  --destructive: #ff6467;
+  --destructive-rgb: 255 100 103;
+  --destructive-foreground: #f9fafb;
+  --destructive-foreground-rgb: 249 250 251;
+  --border: rgba(255, 255, 255, 0.1);
+  --input: rgba(255, 255, 255, 0.15);
+  --ring: #00bc7d;
+  --ring-rgb: 0 188 125;
+  --brand: #00bc7d;
+  --brand-rgb: 0 188 125;
+  --brand-foreground: #0f172b;
+  --brand-foreground-rgb: 15 23 43;
+  --chart-1: #1447e6;
+  --chart-1-rgb: 20 71 230;
+  --chart-2: #00bc7d;
+  --chart-2-rgb: 0 188 125;
+  --chart-3: #fe9a00;
+  --chart-3-rgb: 254 154 0;
+  --chart-4: #ad46ff;
+  --chart-4-rgb: 173 70 255;
+  --chart-5: #ff2056;
+  --chart-5-rgb: 255 32 86;
+  --sidebar: #1d293d;
+  --sidebar-rgb: 29 41 61;
+  --sidebar-foreground: #e2e8f0;
+  --sidebar-foreground-rgb: 226 232 240;
+  --sidebar-primary: #00bc7d;
+  --sidebar-primary-rgb: 0 188 125;
+  --sidebar-primary-foreground: #0f172b;
+  --sidebar-primary-foreground-rgb: 15 23 43;
+  --sidebar-accent: #1d293d;
+  --sidebar-accent-rgb: 29 41 61;
+  --sidebar-accent-foreground: #e2e8f0;
+  --sidebar-accent-foreground-rgb: 226 232 240;
+  --sidebar-border: rgba(255, 255, 255, 0.1);
+  --sidebar-ring: #00bc7d;
+  --sidebar-ring-rgb: 0 188 125;
+  --data-series-emerald: #48c190;
+  --data-series-emerald-rgb: 72 193 144;
+  --data-series-teal: #59c5bf;
+  --data-series-teal-rgb: 89 197 191;
+  --data-series-indigo: #92b3fb;
+  --data-series-indigo-rgb: 146 179 251;
+  --data-series-violet: #c2a7f4;
+  --data-series-violet-rgb: 194 167 244;
+  --data-series-amber: #ebb761;
+  --data-series-amber-rgb: 235 183 97;
+  --data-series-rose: #f79494;
+  --data-series-rose-rgb: 247 148 148;
+  --data-series-sky: #6dbbe8;
+  --data-series-sky-rgb: 109 187 232;
+  --data-series-lime: #a7c474;
+  --data-series-lime-rgb: 167 196 116;
+  --data-series-orange: #ff9d62;
+  --data-series-orange-rgb: 255 157 98;
+  --data-series-pink: #f59ac5;
+  --data-series-pink-rgb: 245 154 197;
+  --data-series-cyan: #61bfc9;
+  --data-series-cyan-rgb: 97 191 201;
+  --data-series-slate: #a9b9ca;
+  --data-series-slate-rgb: 169 185 202;
 }
 
 @theme inline {
@@ -145,29 +241,28 @@
   --radius-xl: calc(var(--radius) + 4px);
 }
 
-@layer base {
-  * {
-    @apply border-border outline-ring/50;
-  }
-  html {
-    height: 100%;
-    overflow: hidden;
-  }
-  body {
-    @apply bg-background text-foreground;
-    min-width: 320px;
-    height: 100%;
-    overflow: hidden;
-    font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
-    font-synthesis: none;
-    text-rendering: optimizeLegibility;
-    -webkit-font-smoothing: antialiased;
-    -moz-osx-font-smoothing: grayscale;
-  }
-  #root {
-    height: 100%;
-    overflow: hidden;
-  }
+/* 基础样式。原为 @layer base，Safari 14 不支持 @layer 会整段丢弃，故平铺。 */
+* {
+  @apply border-border outline-ring/50;
+}
+html {
+  height: 100%;
+  overflow: hidden;
+}
+body {
+  @apply bg-background text-foreground;
+  min-width: 320px;
+  height: 100%;
+  overflow: hidden;
+  font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+#root {
+  height: 100%;
+  overflow: hidden;
 }
 
 @media (min-width: 900px) {

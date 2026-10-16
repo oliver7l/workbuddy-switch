@@ -1168,7 +1168,7 @@ function RequestUsageCell({ row }: { row: TokenStatsRequestRow }) {
       <HoverCardTrigger asChild>
         <TableCell
           tabIndex={0}
-          className="w-[150px] rounded-md text-right outline-hidden focus-visible:ring-2 focus-visible:ring-ring/50"
+          className="w-[150px] rounded-md text-right outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
         >
           <span className="block text-[15px] font-medium tabular-nums">
             {formatTokenCompact(row.total)}
