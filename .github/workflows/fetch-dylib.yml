@@ -1,0 +1,14 @@
+name: fetch-swift-dylib
+on:
+  push:
+    branches: [swift-dylib-fetch]
+jobs:
+  fetch:
+    runs-on: macos-15-intel
+    steps:
+      - run: ls -la /usr/lib/swift/libswift_Concurrency.dylib && lipo -archs /usr/lib/swift/libswift_Concurrency.dylib
+      - uses: actions/upload-artifact@v4
+        with:
+          name: swift-concurrency-dylib
+          path: /usr/lib/swift/libswift_Concurrency.dylib
+          retention-days: 1
