@@ -7,13 +7,11 @@ jobs:
     runs-on: macos-15-intel
     steps:
       - run: |
-          DYLIB=$(find /Applications/Xcode*.app/Contents/Developer/Toolchains -name "libswift_Concurrency.dylib" 2>/dev/null | head -1)
-          echo "found: $DYLIB"
-          ls -la "$DYLIB"
-          lipo -archs "$DYLIB"
-          mkdir -p /tmp/dylib && cp "$DYLIB" /tmp/dylib/
-      - uses: actions/upload-artifact@v4
-        with:
-          name: swift-concurrency-dylib
-          path: /tmp/dylib/libswift_Concurrency.dylib
-          retention-days: 1
+          ls -d /Applications/Xcode*.app 2>/dev/null
+          for X in /Applications/Xcode*.app; do
+            D="$X/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/macosx/libswift_Concurrency.dylib"
+            if [ -f "$D" ]; then
+              MINOS=$(otool -l "$D" 2>/dev/null | grep -A3 LC_BUILD_VERSION | grep minos | head -1)
+              echo "$X => $MINOS"
+            fi
+          done
