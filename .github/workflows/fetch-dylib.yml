@@ -7,14 +7,9 @@ jobs:
     runs-on: macos-15-intel
     steps:
       - run: |
-          X=$(ls -d /Applications/Xcode*.app | head -1)
-          D="$X/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/macosx/libswift_Concurrency.dylib"
-          echo "using: $D"
-          ls -la "$D"
-          otool -l "$D" | grep -E "cmd LC_VERSION_MIN|minos|platform|current version" | head -5
-          mkdir -p /tmp/dylib && cp "$D" /tmp/dylib/
-      - uses: actions/upload-artifact@v4
-        with:
-          name: swift-concurrency-dylib-macos
-          path: /tmp/dylib/libswift_Concurrency.dylib
-          retention-days: 1
+          find /Applications/Xcode*.app -name "libswift_Concurrency.dylib" 2>/dev/null | while read D; do
+            echo "=== $D"
+            otool -l "$D" 2>/dev/null | grep -E "cmd LC_VERSION_MIN|minos|platform" | head -2
+          done
+          echo "=== swift 目录结构 ==="
+          ls /Applications/Xcode_16.0.0.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/ 2>/dev/null
