@@ -1,11 +1,12 @@
 name: auto-follow
 
 # 自有更新通道的自动跟进：上游（changexbc/workbuddy-switch）出新版本时，
-# 自动合并进 self 分支并打 self 标签触发 build.yml，发布到本 fork 的 Release。
-# 本地构建的 App 更新源指向本 fork 的 latest.json，因此「点更新」拿到的
-# 永远是「上游最新 + 本地自有功能」的构建。
-#
-# 合并冲突时自动开 issue，需要手动解冲突后重跑（gh workflow run auto-follow）。
+# 分别合并进两条机器线并统一打标签，触发双架构构建发布到本 fork 的 Release。
+#   - macos11-x86_64 分支  = Intel 机线（macOS 11.7 + x86_64，build-macos11-x86_64.yml）
+#   - macos15-aarch64 分支 = Mac mini 线（macOS 15.6 + aarch64，build-macos15-aarch64.yml）
+# 本地构建的 App 更新源指向本 fork 的 latest-macos-<arch>.json，因此「点更新」
+# 拿到的永远是「上游最新 + 本地自有功能」、且只匹配本机架构的构建。
+# 任一分支合并冲突时自动开 issue，需要手动解冲突后重跑（gh workflow run auto-follow）。
 
 on:
   schedule:
@@ -22,10 +23,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: macos11-compat
+          ref: macos11-x86_64
           fetch-depth: 0
 
-      - name: Sync upstream, merge new tag, trigger build
+      - name: Merge upstream into both machine lanes, then tag
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -35,26 +36,35 @@ jobs:
           git remote add upstream https://github.com/changexbc/workbuddy-switch.git
           git fetch upstream --tags
 
-          LATEST=$(git tag --merged upstream/main --sort=-v:refname -l 'v*' | grep -v -- '-self' | head -1)
+          LATEST=$(git tag --merged upstream/main --sort=-v:refname -l 'v*' | grep -v -- '-own' | head -1)
           if [ -z "$LATEST" ]; then
             echo "上游没有任何可用 tag，退出"
             exit 0
           fi
           echo "上游最新 tag：$LATEST"
 
-          if git ls-remote --tags origin "refs/tags/${LATEST}-self" | grep -q .; then
-            echo "${LATEST}-self 已构建过，无需跟进"
+          if git ls-remote --tags origin "refs/tags/${LATEST}-own" | grep -q .; then
+            echo "${LATEST}-own 已构建过，无需跟进"
             exit 0
           fi
 
-          if ! git merge --no-edit "$LATEST"; then
-            gh issue create \
-              --title "auto-follow：合并 $LATEST 冲突，需手动处理" \
-              --body "self 分支与 $LATEST 合并冲突。本地执行：git fetch origin --tags && git checkout macos11-compat && git merge $LATEST，解冲突后 push，再手动打标签 ${LATEST}-self。" || true
-            exit 1
-          fi
+          merge_lane() {
+            local branch="$1"
+            git fetch origin "$branch"
+            git checkout -B "$branch-sync" "origin/$branch"
+            if ! git merge --no-edit "$LATEST"; then
+              gh issue create \
+                --title "auto-follow：合并 $LATEST 到 $branch 冲突，需手动处理" \
+                --body "「$branch」分支与 $LATEST 合并冲突。本地执行：git fetch origin --tags && git checkout $branch && git merge $LATEST，解冲突后 push。" || true
+              return 1
+            fi
+            git push origin "$branch-sync:$branch"
+          }
 
-          git push origin macos11-compat
-          git tag "${LATEST}-self"
-          git push origin "${LATEST}-self"
-          echo "已触发 $LATEST-self 构建（build.yml 按标签自动发布 Release）"
+          merge_lane macos11-x86_64
+          merge_lane macos15-aarch64
+
+          git checkout -B own-tag macos11-x86_64
+          git tag "${LATEST}-own"
+          git push origin "${LATEST}-own"
+          echo "已触发 ${LATEST}-own 构建：build-macos11-x86_64 + build-macos15-aarch64 并行发布"
