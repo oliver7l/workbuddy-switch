@@ -134,8 +134,7 @@ fn reject_session_writes_without_restart(
             "errors": [{ "error": SYNC_WITHOUT_RESTART_MESSAGE }],
         })
     });
-    let overwrite_error =
-        has_overwrite.then(|| OVERWRITE_WITHOUT_RESTART_MESSAGE.to_string());
+    let overwrite_error = has_overwrite.then(|| OVERWRITE_WITHOUT_RESTART_MESSAGE.to_string());
     (copy, sync, overwrite_error)
 }
 
@@ -203,9 +202,8 @@ pub fn switch_account(
         }
         // 本次是否请求了会话写入；同时记下写入前已存在的未完成记录，供写入后比对。
         let ops_paths = SessionPaths::for_variant(variant);
-        let attempts_session_writes = !copy_session_ids.is_empty()
-            || !sync_selections.is_empty()
-            || overwrite_mode.is_some();
+        let attempts_session_writes =
+            !copy_session_ids.is_empty() || !sync_selections.is_empty() || overwrite_mode.is_some();
         let pending_before = if attempts_session_writes {
             pending_operation_ids(&ops_paths, variant)
         } else {
@@ -219,8 +217,11 @@ pub fn switch_account(
             } else {
                 "正在清空目标账号的会话（归档模式，可恢复）…"
             });
-            match overwrite::overwrite_target_sessions_with_progress(&acc, mode, Some(&|message: &str| progress(message)))
-            {
+            match overwrite::overwrite_target_sessions_with_progress(
+                &acc,
+                mode,
+                Some(&|message: &str| progress(message)),
+            ) {
                 Ok(report) => overwrite_report = Some(report),
                 // 档位锁被占用或无法建立互斥：可能另有会话写入正在进行，
                 // 不能当成普通失败后继续写认证并启动 App（与复制/同步同口径）。

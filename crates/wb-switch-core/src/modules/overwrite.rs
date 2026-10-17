@@ -21,7 +21,7 @@
 //! 复制会话（路径 B）必须在覆盖**之后**执行：覆盖只清理执行时刻的活跃会话，
 //! 复制新写入的行不会被本轮清理波及（switch.rs 的编排顺序保证这一点）。
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use rusqlite::Connection;
 use serde_json::{json, Value};
@@ -49,6 +49,10 @@ pub const OVERWRITE_APP_RUNNING: &str =
 
 /// 档位不支持会话覆盖时的统一文案（与复制路径同判据）。
 pub const OVERWRITE_UNSUPPORTED: &str = "该档位暂不支持会话覆盖";
+
+/// 云端执行器：入参（服务端会话 id, 模式 archive|delete），成功 Ok(())。
+/// 单测注入假执行器，生产路径走 [`cloud_archive_or_delete`]。
+pub type CloudExecutor<'a> = &'a dyn Fn(&str, &str) -> Result<(), String>;
 
 /// 本地软删 + 云端清理都完成后交给宿主的报告形状：
 /// `{ mode, targetUid, scanned, softDeleted, cloudSkipped, cloudFailed, mappingRemoved, backup }`。
@@ -91,7 +95,7 @@ fn overwrite_target_sessions_at(
     target_acc: &Value,
     mode: &str,
     is_app_running: impl Fn(WbVariant) -> bool,
-    cloud: Option<&dyn Fn(&str, &str) -> Result<(), String>>,
+    cloud: Option<CloudExecutor<'_>>,
     progress: Option<&dyn Fn(&str)>,
 ) -> Result<Value, String> {
     let mode = normalize_mode(mode)?;
@@ -99,7 +103,11 @@ fn overwrite_target_sessions_at(
         return Err(OVERWRITE_APP_RUNNING.to_string());
     }
     if !session_copy_supported_at(&paths.data_root) {
-        return Err(format!("{}（档位 {}）", OVERWRITE_UNSUPPORTED, variant.as_str()));
+        return Err(format!(
+            "{}（档位 {}）",
+            OVERWRITE_UNSUPPORTED,
+            variant.as_str()
+        ));
     }
     let target_uid = account::get_str(target_acc, "uid").unwrap_or_default();
     if target_uid.is_empty() {
@@ -144,7 +152,7 @@ fn overwrite_target_sessions_at(
     }
 
     // 本地软删（幂等）：与官方 App 删除同款——deleted_at/updated_at 写同一时间戳。
-    let now_ms = config::now_ms() as i64;
+    let now_ms = config::now_ms();
     let mut soft_deleted: Vec<Value> = Vec::new();
     {
         let mut stmt = conn
@@ -157,7 +165,7 @@ fn overwrite_target_sessions_at(
             .map_err(|error| format!("事务开启失败：{error}"))?;
         for (id, title) in &rows {
             match stmt.execute(rusqlite::params![now_ms, id, target_uid]) {
-                Ok(updated) if updated == 1 => {
+                Ok(1) => {
                     soft_deleted.push(json!({ "id": id, "title": title }));
                 }
                 Ok(_) => {
@@ -192,7 +200,14 @@ fn overwrite_target_sessions_at(
             continue;
         }
         if let Some(p) = progress {
-            p(&format!("云端{}会话 {conversation_id}…", if mode == OVERWRITE_MODE_DELETE { "删除" } else { "归档" }));
+            p(&format!(
+                "云端{}会话 {conversation_id}…",
+                if mode == OVERWRITE_MODE_DELETE {
+                    "删除"
+                } else {
+                    "归档"
+                }
+            ));
         }
         let Some(cloud) = cloud else {
             cloud_skipped.push(json!({ "id": id, "conversationId": conversation_id, "reason": "云端清理不可用（离线）" }));
@@ -201,13 +216,19 @@ fn overwrite_target_sessions_at(
         match cloud(&conversation_id, mode) {
             Ok(()) => {
                 if mode == OVERWRITE_MODE_DELETE {
-                    mapping_removed += remove_mapping_by_conversation(mapping_conn.as_ref(), &conversation_id);
+                    mapping_removed +=
+                        remove_mapping_by_conversation(mapping_conn.as_ref(), &conversation_id);
                 }
                 item["conversationId"] = json!(conversation_id);
-                item["cloud"] = json!(if mode == OVERWRITE_MODE_DELETE { "deleted" } else { "archived" });
+                item["cloud"] = json!(if mode == OVERWRITE_MODE_DELETE {
+                    "deleted"
+                } else {
+                    "archived"
+                });
             }
             Err(error) => {
-                cloud_failed.push(json!({ "id": id, "conversationId": conversation_id, "error": error }));
+                cloud_failed
+                    .push(json!({ "id": id, "conversationId": conversation_id, "error": error }));
             }
         }
     }
@@ -239,7 +260,11 @@ fn is_numeric_id(id: &str) -> bool {
 }
 
 /// 把 edge-sync 映射库一并备份进本次覆盖的备份目录（存在才备份，失败不阻断）。
-fn backup_edge_sync_db(paths: &SessionPaths, variant: WbVariant, backup_dir: &PathBuf) -> Option<PathBuf> {
+fn backup_edge_sync_db(
+    paths: &SessionPaths,
+    variant: WbVariant,
+    backup_dir: &Path,
+) -> Option<PathBuf> {
     let src = edge_sync_db_path(&paths.data_root, variant);
     if !src.is_file() {
         return None;
@@ -311,7 +336,9 @@ fn cloud_archive_or_delete(
                 .map_err(|error| format!("异步运行时创建失败：{error}"))?;
             rt.block_on(cloud_call_async(account, variant, conversation_id, mode))
         });
-        handle.join().unwrap_or_else(|_| Err("云端清理线程崩溃".to_string()))
+        handle
+            .join()
+            .unwrap_or_else(|_| Err("云端清理线程崩溃".to_string()))
     })
 }
 
@@ -321,7 +348,11 @@ async fn cloud_call_async(
     conversation_id: String,
     mode: String,
 ) -> Result<(), String> {
-    let action = if mode == OVERWRITE_MODE_DELETE { "delete" } else { "archive" };
+    let action = if mode == OVERWRITE_MODE_DELETE {
+        "delete"
+    } else {
+        "archive"
+    };
     let url = format!(
         "{}/console/as/conversations/{}/{}",
         variant.api_endpoint(),
@@ -357,7 +388,10 @@ async fn cloud_call_async(
 
 fn finish_cloud_response(status: u16, text: &str, action: &str) -> Result<(), String> {
     if !(200..300).contains(&status) {
-        return Err(format!("云端{action}失败：HTTP {status} {}", truncate(text, 200)));
+        return Err(format!(
+            "云端{action}失败：HTTP {status} {}",
+            truncate(text, 200)
+        ));
     }
     // 网关成功但业务码非 0 的形态：{code: !=0, msg}。
     if let Ok(value) = serde_json::from_str::<Value>(text) {
@@ -465,7 +499,11 @@ mod tests {
             );",
         )
         .unwrap();
-        for (sid, cid) in [("uuid-1", "uuid-1"), ("200123", "200123"), ("300456", "300456")] {
+        for (sid, cid) in [
+            ("uuid-1", "uuid-1"),
+            ("200123", "200123"),
+            ("300456", "300456"),
+        ] {
             conn.execute(
                 "INSERT INTO edge_sync_mapping (session_id, conversation_id) VALUES (?1, ?2)",
                 [sid, cid],
@@ -487,7 +525,9 @@ mod tests {
 
     fn fake_cloud_ok(log: &CloudLog) -> impl Fn(&str, &str) -> Result<(), String> + '_ {
         move |cid: &str, mode: &str| {
-            log.lock().unwrap().push((cid.to_string(), mode.to_string()));
+            log.lock()
+                .unwrap()
+                .push((cid.to_string(), mode.to_string()));
             Ok(())
         }
     }
@@ -513,7 +553,11 @@ mod tests {
         .unwrap();
 
         assert_eq!(report["mode"], OVERWRITE_MODE_ARCHIVE);
-        assert_eq!(report["scanned"].as_i64(), Some(3), "活跃行 = uuid-1 + 200123 + 300456");
+        assert_eq!(
+            report["scanned"].as_i64(),
+            Some(3),
+            "活跃行 = uuid-1 + 200123 + 300456"
+        );
         assert_eq!(report["softDeleted"].as_array().unwrap().len(), 3);
 
         let conn = open_db(&paths.workbuddy_db(), false).unwrap();
@@ -525,9 +569,15 @@ mod tests {
             )
             .unwrap()
         };
-        assert!(deleted_at("uuid-1").unwrap_or(0) > 1, "uuid 本地会话必须软删");
+        assert!(
+            deleted_at("uuid-1").unwrap_or(0) > 1,
+            "uuid 本地会话必须软删"
+        );
         assert!(deleted_at("200123").unwrap_or(0) > 1);
-        assert!(deleted_at("300456").unwrap_or(-9) > 1, "deleted_at=-1 的回灌行也要清");
+        assert!(
+            deleted_at("300456").unwrap_or(-9) > 1,
+            "deleted_at=-1 的回灌行也要清"
+        );
         assert_eq!(deleted_at("400789"), Some(12345), "已删行不得被碰");
         assert_eq!(deleted_at("uuid-a1"), None, "来源账号的行绝不能被波及");
 
@@ -541,7 +591,9 @@ mod tests {
         // 归档模式保留 mapping（可恢复）。
         let mapping = open_db(&edge_sync_db_path(&paths.data_root, WbVariant::Cn), false).unwrap();
         let count: i64 = mapping
-            .query_row("SELECT COUNT(*) FROM edge_sync_mapping", [], |row| row.get(0))
+            .query_row("SELECT COUNT(*) FROM edge_sync_mapping", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         assert_eq!(count, 3, "归档模式不得清理 mapping");
     }
@@ -565,7 +617,11 @@ mod tests {
             None,
         )
         .unwrap();
-        assert_eq!(report["mappingRemoved"].as_i64(), Some(2), "两条数字 id 会话的 mapping 被清");
+        assert_eq!(
+            report["mappingRemoved"].as_i64(),
+            Some(2),
+            "两条数字 id 会话的 mapping 被清"
+        );
         assert_eq!(report["cloudFailed"].as_array().unwrap().len(), 0);
 
         let mapping = open_db(&edge_sync_db_path(&paths.data_root, WbVariant::Cn), false).unwrap();
@@ -690,7 +746,10 @@ mod tests {
         )
         .unwrap();
         let dir = report["backup"]["dir"].as_str().unwrap();
-        assert!(Path::new(dir).join("workbuddy.db").is_file(), "主库快照必须存在");
+        assert!(
+            Path::new(dir).join("workbuddy.db").is_file(),
+            "主库快照必须存在"
+        );
     }
 
     #[test]
