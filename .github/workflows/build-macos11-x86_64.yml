@@ -41,6 +41,16 @@ jobs:
       # runner 上同样跳过 playwright 浏览器下载等无谓 postinstall）
       - run: npm ci
 
+      # build:app:release 脚本写死了从 ~/.wb-switch/wb-switch-updater.key 读密钥
+      # （密码同为 wb-switch-dev）；CI 上把 Secret 落到该路径。
+      - name: Install updater signing key
+        env:
+          KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          mkdir -p ~/.wb-switch
+          printf '%s' "$KEY" > ~/.wb-switch/wb-switch-updater.key
+
+
       # 完整链路：companion(npm ci + vite + cargo release) → 主前端 tsc+vite → tauri release → fix-app.sh
       - name: Build app (release)
         run: npm run build:app:release
