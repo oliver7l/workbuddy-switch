@@ -2,12 +2,16 @@
 # 背景：本机是 macOS 11.7 + 弱 CPU（m3-6Y30），本地 release 构建要 30 分钟以上；
 # 且前端已做 Tailwind v4→v3 降级（见 src/index.css 注释）修复 Safari 14 WebView 布局坍塌。
 # 本工作流把构建搬到 GitHub Actions 的 Intel runner，MACOSX_DEPLOYMENT_TARGET=11.0 保证
-# 产物能跑在 macOS 11.7 上。触发：push 到 macos11-compat 分支，或手动 workflow_dispatch。
+# 产物能跑在 macOS 11.7 上。
+# 触发：push 到 macos11-compat 分支（出 artifact）、手动 workflow_dispatch、
+# 推 v*-self 标签（auto-follow 自动跟进上游时打；构建签名产物并发布 Release，
+# 供本地构建的 App 更新通道拉取）。
 name: build-macos11
 
 on:
   push:
     branches: [macos11-compat]
+    tags: ["v*-self"]
   workflow_dispatch:
 
 jobs:
@@ -16,6 +20,9 @@ jobs:
     timeout-minutes: 60
     env:
       MACOSX_DEPLOYMENT_TARGET: "11.0"
+      # 自有更新通道：用本 fork 配置的签名密钥（Secrets），与 App 内嵌公钥配对
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
 
@@ -31,11 +38,6 @@ jobs:
       # .npmrc 设了 ignore-scripts（本机 esbuild 官方二进制不支持 macOS 11；
       # runner 上同样跳过 playwright 浏览器下载等无谓 postinstall）
       - run: npm ci
-
-      # build:app:release 从 ~/.wb-switch/wb-switch-updater.key 读签名密钥，
-      # 这里生成一把一次性密钥（只用于本次 updater 产物签名，不影响 App 内嵌公钥）
-      - name: Generate throwaway updater key
-        run: npx tauri signer generate -w ~/.wb-switch/wb-switch-updater.key --password wb-switch-dev
 
       # 完整链路：companion(npm ci + vite + cargo release) → 主前端 tsc+vite → tauri release → fix-app.sh
       - name: Build app (release)
@@ -57,3 +59,33 @@ jobs:
           name: workbuddy-switch-macos11
           path: target/release/bundle/macos/workbuddy-switch-macos11.zip
           retention-days: 7
+
+      # 打 v*-self 标签时：整理签名更新产物（.app.tar.gz + .sig + 清单）并发布 Release，
+      # 本地构建的 App 通过更新通道（latest-macos-x86_64.json）自动升级到此版本。
+      - name: Prepare updater assets
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          set -euo pipefail
+          mkdir -p dist-bin
+          BUNDLE="target/release/bundle/macos"
+          ARCHIVE=$(find "$BUNDLE" -maxdepth 1 -type f -name '*.app.tar.gz' | sort | head -1)
+          test -f "$ARCHIVE" && test -f "$ARCHIVE.sig"
+          cp "$ARCHIVE" dist-bin/workbuddy-switch-macos-x86_64.app.tar.gz
+          cp "$ARCHIVE.sig" dist-bin/workbuddy-switch-macos-x86_64.app.tar.gz.sig
+          VER=$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' src-tauri/tauri.conf.json | head -1)
+          UPDATE_VERSION="$VER" UPDATE_OS=macos UPDATE_ARCH=x86_64 \
+            sh scripts/gen-update-json.sh oliver7l workbuddy-switch
+          cp latest-macos-x86_64.json dist-bin/
+          cp latest-macos-x86_64.json dist-bin/latest.json
+          ls -la dist-bin/
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist-bin/workbuddy-switch-macos11.zip
+            dist-bin/workbuddy-switch-macos-x86_64.app.tar.gz
+            dist-bin/workbuddy-switch-macos-x86_64.app.tar.gz.sig
+            dist-bin/latest-macos-x86_64.json
+            dist-bin/latest.json
