@@ -1,4 +1,7 @@
 # Intel 台式机（macOS 11.7 + x86_64）专用构建线。
+
+permissions:
+  contents: write
 # 背景：Intel 机是 macOS 11.7 + 弱 CPU（m3-6Y30），本地 release 构建要 30 分钟以上；
 # 且前端已做 Tailwind v4→v3 降级（见 src/index.css 注释）修复 Safari 14 WebView 布局坍塌。
 # 本工作流在 GitHub Actions 的 Intel runner 构建，MACOSX_DEPLOYMENT_TARGET=11.0 保证

@@ -1,4 +1,7 @@
 # Mac mini（Apple Silicon）专用构建线（2026-10-17 两台机器分开）。
+
+permissions:
+  contents: write
 # 源码用 macos15-aarch64 分支：上游最新 + 切号覆盖功能，【不带】macos11-x86_64 的
 # Tailwind v3 降级等老机补丁（那些只服务 Intel 机的 Safari 14）。
 # 触发：v*-own 标签（auto-follow 在合并完两条机器线后统一打）；
