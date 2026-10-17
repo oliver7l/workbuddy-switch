@@ -22,7 +22,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: self
+          ref: macos11-compat
           fetch-depth: 0
 
       - name: Sync upstream, merge new tag, trigger build
@@ -50,11 +50,11 @@ jobs:
           if ! git merge --no-edit "$LATEST"; then
             gh issue create \
               --title "auto-follow：合并 $LATEST 冲突，需手动处理" \
-              --body "self 分支与 $LATEST 合并冲突。本地执行：git fetch origin --tags && git checkout self && git merge $LATEST，解冲突后 push，再手动打标签 ${LATEST}-self。" || true
+              --body "self 分支与 $LATEST 合并冲突。本地执行：git fetch origin --tags && git checkout macos11-compat && git merge $LATEST，解冲突后 push，再手动打标签 ${LATEST}-self。" || true
             exit 1
           fi
 
-          git push origin self
+          git push origin macos11-compat
           git tag "${LATEST}-self"
           git push origin "${LATEST}-self"
           echo "已触发 $LATEST-self 构建（build.yml 按标签自动发布 Release）"
