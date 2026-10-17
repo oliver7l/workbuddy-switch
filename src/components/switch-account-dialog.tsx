@@ -95,6 +95,9 @@ export function SwitchAccountDialog({ open, onOpenChange, account, onDone }: Pro
   const [tab, setTab] = useState<"links" | "copy">("links");
   /** 关联会话区块上报的状态：tab 徽标与常驻提示用。 */
   const [linksMeta, setLinksMeta] = useState<SessionLinksMeta | null>(null);
+  /** 覆盖目标账号会话：默认不覆盖；启用后默认归档模式（可恢复）。 */
+  const [overwriteEnabled, setOverwriteEnabled] = useState(false);
+  const [overwriteMode, setOverwriteMode] = useState<"archive" | "delete">("archive");
 
   const variant = accountVariant(account);
   const accountId = account?.id;
@@ -134,6 +137,8 @@ export function SwitchAccountDialog({ open, onOpenChange, account, onDone }: Pro
     setSyncGroups([]);
     setLinksMeta(null);
     setTab("links");
+    setOverwriteEnabled(false);
+    setOverwriteMode("archive");
     setLoadingSessions(true);
     void api.listSessions(variant)
       .then((res) => {
@@ -186,12 +191,14 @@ export function SwitchAccountDialog({ open, onOpenChange, account, onDone }: Pro
     setError("");
     const requestedCopy = selected.size > 0;
     const requestedSync = syncSelections.length > 0;
+    const requestedOverwrite = overwriteEnabled;
     try {
       const res = await api.switchAccount({
         accountId: account.id,
         copySessionIds: requestedCopy ? [...selected] : undefined,
         // 勾选绑定预览凭据；执行前后端会重新校验，版本变化则跳过该项。
         syncSelections: requestedSync ? syncSelections : undefined,
+        overwriteMode: requestedOverwrite ? overwriteMode : undefined,
       });
       const nickname = displayName(account);
       const parts: string[] = [];
@@ -209,6 +216,24 @@ export function SwitchAccountDialog({ open, onOpenChange, account, onDone }: Pro
       if (syncedItems.length > 0) parts.push(`已同步 ${syncedItems.length} 个会话`);
       if (skippedItems.length > 0) parts.push(`跳过 ${skippedItems.length} 个会话`);
       if (syncErrors.length > 0) parts.push(`会话同步失败 ${syncErrors.length} 个`);
+      // 覆盖报告：成功数进摘要；云端失败与拒绝原因必须显式提示。
+      const overwriteReport = res.sessionOverwrite;
+      if (overwriteReport) {
+        const modeLabel = overwriteReport.mode === "delete" ? "删除" : "归档";
+        if (overwriteReport.softDeleted.length > 0) {
+          parts.push(`已${modeLabel}目标账号 ${overwriteReport.softDeleted.length} 个旧会话`);
+        }
+        if (overwriteReport.cloudFailed.length > 0) {
+          toast.error(`部分旧会话云端${modeLabel}失败`, {
+            description: overwriteReport.cloudFailed
+              .map((item) => `${item.conversationId}：${item.error}`)
+              .join("；"),
+          });
+        }
+      }
+      if (res.sessionOverwriteError) {
+        toast.error("会话覆盖未执行", { description: res.sessionOverwriteError });
+      }
       if (res.backup) parts.push(`备份: ${res.backup}`);
       // 成功清理：临时备份已回收，不再展示可还原路径；待清理项单独提示，不写进成功文案。
       toast.success(`已切换至「${nickname}」`, {
@@ -362,14 +387,21 @@ export function SwitchAccountDialog({ open, onOpenChange, account, onDone }: Pro
   /** 覆盖项数量：底部摘要据此提示风险。 */
   const overwriteCount = syncSelections.filter((item) => item.mode === "overwrite").length;
   const linksAvailable = linksMeta?.available ?? true;
+  const overwriteSuffix = overwriteEnabled
+    ? overwriteMode === "delete"
+      ? "，并删除目标账号全部旧会话（不可逆）"
+      : "，并归档目标账号全部旧会话"
+    : "";
   const summaryMain =
     copyCount > 0 && syncCount > 0
-      ? `将复制 ${copyCount} 个、同步 ${syncCount} 个关联会话`
+      ? `将复制 ${copyCount} 个、同步 ${syncCount} 个关联会话${overwriteSuffix}`
       : copyCount > 0
-        ? `将复制 ${copyCount} 个会话`
+        ? `将复制 ${copyCount} 个会话${overwriteSuffix}`
         : syncCount > 0
-          ? `将同步 ${syncCount} 个关联会话`
-          : "本次仅切换账号";
+          ? `将同步 ${syncCount} 个关联会话${overwriteSuffix}`
+          : overwriteEnabled
+            ? `本次仅切换账号${overwriteSuffix}`
+            : "本次仅切换账号";
   const summarySub =
     overwriteCount > 0
       ? `其中 ${overwriteCount} 个会替换目标账号的完整内容`
@@ -569,6 +601,50 @@ export function SwitchAccountDialog({ open, onOpenChange, account, onDone }: Pro
           ) : (
             <div className="min-h-0 space-y-2 overflow-y-auto">{copyTabContent}</div>
           )}
+
+          {/* 覆盖目标账号会话：默认关闭；启用后默认归档模式（可恢复），删除模式不可逆。 */}
+          <div className="shrink-0 rounded-md border p-3">
+            <label className="flex cursor-pointer items-center gap-2 text-sm font-medium">
+              <input
+                type="checkbox"
+                className="size-3.5 cursor-pointer accent-primary"
+                checked={overwriteEnabled}
+                disabled={busy}
+                onChange={(e) => setOverwriteEnabled(e.target.checked)}
+              />
+              覆盖目标账号的会话列表（先清空旧会话）
+            </label>
+            {overwriteEnabled && (
+              <div className="mt-2 space-y-1.5 pl-6 text-xs text-muted-foreground">
+                <label className="flex cursor-pointer items-center gap-2">
+                  <input
+                    type="radio"
+                    name="overwrite-mode"
+                    className="accent-primary"
+                    checked={overwriteMode === "archive"}
+                    disabled={busy}
+                    onChange={() => setOverwriteMode("archive")}
+                  />
+                  归档旧会话（默认，可随时恢复）
+                </label>
+                <label className="flex cursor-pointer items-center gap-2">
+                  <input
+                    type="radio"
+                    name="overwrite-mode"
+                    className="accent-primary"
+                    checked={overwriteMode === "delete"}
+                    disabled={busy}
+                    onChange={() => setOverwriteMode("delete")}
+                  />
+                  <span className="text-destructive">删除旧会话（不可逆，所有设备同步消失）</span>
+                </label>
+                <p>
+                  切换时先{overwriteMode === "delete" ? "删除" : "归档"}目标账号的全部现有会话；
+                  如需照搬当前账号的全部会话，请在「复制会话」里全选。
+                </p>
+              </div>
+            )}
+          </div>
         </div>
 
         <DialogFooter className="shrink-0 sm:justify-between">

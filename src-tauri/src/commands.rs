@@ -578,6 +578,7 @@ pub async fn switch_account(
     share_sessions: Option<bool>,
     copy_session_ids: Option<Vec<String>>,
     sync_selections: Option<Value>,
+    overwrite_mode: Option<String>,
 ) -> Result<Value, String> {
     if account_id.trim().is_empty() {
         return Err("缺少 accountId".to_string());
@@ -599,6 +600,7 @@ pub async fn switch_account(
             share_sessions,
             &copy_ids,
             &sync_selections,
+            overwrite_mode.as_deref(),
         )
     })
     .await

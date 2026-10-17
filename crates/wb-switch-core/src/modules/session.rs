@@ -260,7 +260,7 @@ fn edge_sync_db_default_name(variant: WbVariant) -> &'static str {
 /// 判据不用 mtime——本工具自身写入会刷新 mtime，按它选会自我强化错误结果；
 /// 也不用行数——需逐个打开数据库，还要处理损坏与锁。两个档位走同一套发现逻辑。
 /// 目录不存在、读取失败或没有任何候选时回落到默认文件名，不得 panic。
-fn edge_sync_db_path(root: &Path, variant: WbVariant) -> PathBuf {
+pub(crate) fn edge_sync_db_path(root: &Path, variant: WbVariant) -> PathBuf {
     let best = std::fs::read_dir(root)
         .into_iter()
         .flatten()
@@ -517,7 +517,7 @@ pub(crate) fn find_project_jsonl(paths: &SessionPaths, cid: &str) -> Option<Path
 ///
 /// 任何一步失败都返回 Err——不能沿用「忽略 copy 错误后仍宣称备份成功」的旧行为，
 /// 备份不可信时后续数据库写入必须先停下来（design §1）。
-fn backup_workbuddy_db(paths: &SessionPaths, backup_root: &Path) -> Result<PathBuf, String> {
+pub(crate) fn backup_workbuddy_db(paths: &SessionPaths, backup_root: &Path) -> Result<PathBuf, String> {
     let db = paths.workbuddy_db();
     if !db.is_file() {
         return Err("会话数据不存在，未复制".to_string());
@@ -4709,11 +4709,11 @@ mod tests {
         let ai = SessionPaths::for_variant(WbVariant::Ai);
         assert_eq!(ai.workbuddy_db().parent(), Some(ai.data_root.as_path()));
         assert_ne!(cn.workbuddy_db(), ai.workbuddy_db());
-        // 国际版数据根与国内版不同构，默认文件名为 v4，且同样走动态发现。
-        assert!(ai
-            .edge_sync_db(WbVariant::Ai)
-            .to_string_lossy()
-            .ends_with("edge-sync-mapping-v4.db"));
+        // 国际版数据根与国内版不同构，同样走动态发现：真实数据根里可能存在任意
+        // 版本（本机实测 v3），这里只断言文件名前缀与落点，具体版本不写死。
+        let ai_edge = ai.edge_sync_db(WbVariant::Ai);
+        assert_eq!(ai_edge.parent(), Some(ai.data_root.as_path()));
+        assert!(ai_edge.to_string_lossy().contains("edge-sync-mapping-"));
         assert_ne!(
             cn.edge_sync_db(WbVariant::Cn),
             ai.edge_sync_db(WbVariant::Ai)
