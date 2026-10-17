@@ -355,3 +355,4 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: artifacts/*
+# 自有构建说明见 local/ 与 .github/workflows/auto-follow.yml
