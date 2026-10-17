@@ -1,12 +1,15 @@
-# macOS 11 兼容版云端构建。
-# 背景：本机是 macOS 11.7 + 弱 CPU（m3-6Y30），本地 release 构建要 30 分钟以上；
-# 且前端已做 Tailwind v4→v3 降级（见 src/index.css 注释）修复 Safari 14 WebView 布局坍塌。
-# 本工作流把构建搬到 GitHub Actions 的 Intel runner，MACOSX_DEPLOYMENT_TARGET=11.0 保证
-# 产物能跑在 macOS 11.7 上。
+# 双架构云端构建（自有更新通道的发布源）。
+# 背景：
+# - Intel 台式机：macOS 11.7 + 弱 CPU（m3-6Y30），本地 release 构建要 30 分钟以上；
+#   前端已做 Tailwind v4→v3 降级（见 src/index.css 注释）修复 Safari 14 WebView 布局坍塌，
+#   MACOSX_DEPLOYMENT_TARGET=11.0 保证产物能跑在 macOS 11.7 上。
+# - Mac mini（Apple Silicon）：当前主力机，跑 aarch64 原生构建。
+# 两条 job 共用同一套签名密钥（Secrets），打 v*-self 标签时各自产出
+# .app.tar.gz + .sig + latest-macos-<arch>.json，合并发布到同一 Release。
+# 本地构建的 App 更新源指向本 fork 的 latest-macos-<arch>.json（按各自架构取）。
 # 触发：push 到 macos11-compat 分支（出 artifact）、手动 workflow_dispatch、
-# 推 v*-self 标签（auto-follow 自动跟进上游时打；构建签名产物并发布 Release，
-# 供本地构建的 App 更新通道拉取）。
-name: build-macos11
+# 推 v*-self 标签（auto-follow 自动跟进上游时打）。
+name: build-macos
 
 on:
   push:
@@ -15,12 +18,12 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
+  build-x64:
+    name: Build x86_64（Intel 机）
     runs-on: macos-15-intel # Intel runner（macos-13 已弃用），产物为 x86_64-apple-darwin
     timeout-minutes: 60
     env:
       MACOSX_DEPLOYMENT_TARGET: "11.0"
-      # 自有更新通道：用本 fork 配置的签名密钥（Secrets），与 App 内嵌公钥配对
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
     steps:
@@ -52,16 +55,14 @@ jobs:
       - name: Package app
         run: |
           cd target/release/bundle/macos
-          ditto -c -k --sequesterRsrc --keepParent workbuddy-switch.app workbuddy-switch-macos11.zip
+          ditto -c -k --sequesterRsrc --keepParent workbuddy-switch.app workbuddy-switch-macos11-x64.zip
 
       - uses: actions/upload-artifact@v4
         with:
-          name: workbuddy-switch-macos11
-          path: target/release/bundle/macos/workbuddy-switch-macos11.zip
-          retention-days: 7
+          name: workbuddy-switch-macos11-x64
+          path: target/release/bundle/macos/workbuddy-switch-macos11-x64.zip
+          retention-days: 14
 
-      # 打 v*-self 标签时：整理签名更新产物（.app.tar.gz + .sig + 清单）并发布 Release，
-      # 本地构建的 App 通过更新通道（latest-macos-x86_64.json）自动升级到此版本。
       - name: Prepare updater assets
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
@@ -76,16 +77,99 @@ jobs:
           UPDATE_VERSION="$VER" UPDATE_OS=macos UPDATE_ARCH=x86_64 \
             sh scripts/gen-update-json.sh oliver7l workbuddy-switch
           cp latest-macos-x86_64.json dist-bin/
-          cp latest-macos-x86_64.json dist-bin/latest.json
-          ls -la dist-bin/
 
-      - name: Publish release
+      - uses: actions/upload-artifact@v4
         if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
+        with:
+          name: updater-x86_64
+          path: dist-bin/
+          if-no-files-found: error
+          retention-days: 14
+
+  build-aarch64:
+    name: Build aarch64（Mac mini）
+    runs-on: macos-14 # Apple Silicon runner，产物为 aarch64-apple-darwin
+    timeout-minutes: 60
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - run: npm ci
+
+      - name: Build app (release)
+        run: npm run build:app:release
+
+      - name: Package app
+        run: |
+          cd target/release/bundle/macos
+          ditto -c -k --sequesterRsrc --keepParent workbuddy-switch.app workbuddy-switch-macos-aarch64.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: workbuddy-switch-macos-aarch64
+          path: target/release/bundle/macos/workbuddy-switch-macos-aarch64.zip
+          retention-days: 14
+
+      - name: Prepare updater assets
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          set -euo pipefail
+          mkdir -p dist-bin
+          BUNDLE="target/release/bundle/macos"
+          ARCHIVE=$(find "$BUNDLE" -maxdepth 1 -type f -name '*.app.tar.gz' | sort | head -1)
+          test -f "$ARCHIVE" && test -f "$ARCHIVE.sig"
+          cp "$ARCHIVE" dist-bin/workbuddy-switch-macos-aarch64.app.tar.gz
+          cp "$ARCHIVE.sig" dist-bin/workbuddy-switch-macos-aarch64.app.tar.gz.sig
+          VER=$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' src-tauri/tauri.conf.json | head -1)
+          UPDATE_VERSION="$VER" UPDATE_OS=macos UPDATE_ARCH=aarch64 \
+            sh scripts/gen-update-json.sh oliver7l workbuddy-switch
+          cp latest-macos-aarch64.json dist-bin/
+
+      - uses: actions/upload-artifact@v4
+        if: startsWith(github.ref, 'refs/tags/v')
+        with:
+          name: updater-aarch64
+          path: dist-bin/
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Publish release（两架构清单合并）
+    needs: [build-x64, build-aarch64]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download updater assets
+        run: |
+          set -euo pipefail
+          mkdir -p dist-bin
+          gh run download "$GITHUB_RUN_ID" --name updater-x86_64 -D dist-bin/x64
+          gh run download "$GITHUB_RUN_ID" --name updater-aarch64 -D dist-bin/a64
+          mv dist-bin/x64/* dist-bin/
+          mv dist-bin/a64/* dist-bin/
+          rmdir dist-bin/x64 dist-bin/a64
+          ls -la dist-bin/
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: softprops/action-gh-release@v2
         with:
           files: |
-            dist-bin/workbuddy-switch-macos11.zip
             dist-bin/workbuddy-switch-macos-x86_64.app.tar.gz
             dist-bin/workbuddy-switch-macos-x86_64.app.tar.gz.sig
             dist-bin/latest-macos-x86_64.json
-            dist-bin/latest.json
+            dist-bin/workbuddy-switch-macos-aarch64.app.tar.gz
+            dist-bin/workbuddy-switch-macos-aarch64.app.tar.gz.sig
+            dist-bin/latest-macos-aarch64.json
