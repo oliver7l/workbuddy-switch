@@ -1,0 +1,100 @@
+# Intel 台式机（macOS 11.7 + x86_64）专用构建线。
+# 背景：Intel 机是 macOS 11.7 + 弱 CPU（m3-6Y30），本地 release 构建要 30 分钟以上；
+# 且前端已做 Tailwind v4→v3 降级（见 src/index.css 注释）修复 Safari 14 WebView 布局坍塌。
+# 本工作流在 GitHub Actions 的 Intel runner 构建，MACOSX_DEPLOYMENT_TARGET=11.0 保证
+# 产物能跑在 macOS 11.7 上。
+# ⚠️ 两台机器分开（2026-10-17 拍板）：本线只出 x86_64（Intel 机）；
+#    Mac mini（macOS 15.6 + aarch64）走 build-macos15-aarch64.yml（macos15-aarch64 分支源码）。
+# 触发：push 到 macos11-x86_64 分支（出 artifact）、手动 workflow_dispatch、
+# 推 v*-own 标签（auto-follow 自动跟进上游时打；发布 x86_64 签名产物到 Release）。
+name: build-macos11-x86_64
+
+on:
+  push:
+    branches: [macos11-x86_64]
+    tags: ["v*-own"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build x86_64（Intel 机）
+    runs-on: macos-15-intel # Intel runner（macos-13 已弃用），产物为 x86_64-apple-darwin
+    timeout-minutes: 60
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+      # 自有更新通道：用本 fork 配置的签名密钥（Secrets），与 App 内嵌公钥配对
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin
+
+      # .npmrc 设了 ignore-scripts（本机 esbuild 官方二进制不支持 macOS 11；
+      # runner 上同样跳过 playwright 浏览器下载等无谓 postinstall）
+      - run: npm ci
+
+      # build:app:release 脚本写死了从 ~/.wb-switch/wb-switch-updater.key 读密钥
+      # （密码同为 wb-switch-dev）；CI 上把 Secret 落到该路径。
+      - name: Install updater signing key
+        env:
+          KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          mkdir -p ~/.wb-switch
+          printf '%s' "$KEY" > ~/.wb-switch/wb-switch-updater.key
+
+
+      # 完整链路：companion(npm ci + vite + cargo release) → 主前端 tsc+vite → tauri release → fix-app.sh
+      - name: Build app (release)
+        run: npm run build:app:release
+
+      - name: Verify deployment target
+        run: |
+          APP="target/release/bundle/macos/workbuddy-switch.app"
+          /usr/libexec/PlistBuddy -c "Print :LSMinimumSystemVersion" "$APP/Contents/Info.plist"
+          lipo -archs "$APP/Contents/MacOS/wb-switch-rust"
+
+      - name: Package app
+        run: |
+          cd target/release/bundle/macos
+          ditto -c -k --sequesterRsrc --keepParent workbuddy-switch.app workbuddy-switch-macos11-x86_64.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: workbuddy-switch-macos11-x86_64
+          path: target/release/bundle/macos/workbuddy-switch-macos11-x86_64.zip
+          retention-days: 14
+
+      # 打 v*-own 标签时：x86_64 签名更新产物发布到 Release（aarch64 由
+      # build-macos15-aarch64.yml 另行发布，文件名互不冲突）。
+      - name: Prepare updater assets
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          set -euo pipefail
+          mkdir -p dist-bin
+          BUNDLE="target/release/bundle/macos"
+          ARCHIVE=$(find "$BUNDLE" -maxdepth 1 -type f -name '*.app.tar.gz' | sort | head -1)
+          test -f "$ARCHIVE" && test -f "$ARCHIVE.sig"
+          cp "$ARCHIVE" dist-bin/workbuddy-switch-macos-x86_64.app.tar.gz
+          cp "$ARCHIVE.sig" dist-bin/workbuddy-switch-macos-x86_64.app.tar.gz.sig
+          VER=$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' src-tauri/tauri.conf.json | head -1)
+          UPDATE_VERSION="$VER" UPDATE_OS=macos UPDATE_ARCH=x86_64 \
+            sh scripts/gen-update-json.sh oliver7l workbuddy-switch
+          cp latest-macos-x86_64.json dist-bin/
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist-bin/workbuddy-switch-macos11-x86_64.zip
+            dist-bin/workbuddy-switch-macos-x86_64.app.tar.gz
+            dist-bin/workbuddy-switch-macos-x86_64.app.tar.gz.sig
+            dist-bin/latest-macos-x86_64.json
