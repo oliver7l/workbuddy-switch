@@ -74,7 +74,7 @@ jobs:
           VER=$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' src-tauri/tauri.conf.json | head -1)
           UPDATE_VERSION="$VER" UPDATE_OS=macos UPDATE_ARCH=aarch64 \
             sh scripts/gen-update-json.sh oliver7l workbuddy-switch
-          cp latest-macos-aarch64.json dist-bin/
+          cp "$BUNDLE/latest-macos-aarch64.json" dist-bin/
 
       - name: Publish release
         if: startsWith(github.ref, 'refs/tags/v')
