@@ -834,6 +834,11 @@ async fn api_switch(Json(body): Json<Value>) -> Response {
         Ok(selections) => selections,
         Err(error) => return json_err(error, StatusCode::BAD_REQUEST),
     };
+    // 覆盖目标账号会话：archive（默认，可逆）/ delete（彻底，不可逆）；缺省不覆盖。
+    let overwrite_mode = body
+        .get("overwriteMode")
+        .and_then(|v| v.as_str())
+        .map(String::from);
 
     {
         let mut running = SWITCH_RUNNING.lock().unwrap();
@@ -856,6 +861,7 @@ async fn api_switch(Json(body): Json<Value>) -> Response {
             share_sessions,
             &copy_ids,
             &sync_selections,
+            overwrite_mode.as_deref(),
         )
     })
     .await;

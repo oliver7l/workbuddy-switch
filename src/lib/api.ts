@@ -546,6 +546,8 @@ export function switchAccount(args: {
   shareSessions?: boolean;
   copySessionIds?: string[];
   syncSelections?: SessionSyncSelection[];
+  /** 覆盖目标账号的会话列表：archive（归档，默认，可恢复）/ delete（删除，不可逆）。 */
+  overwriteMode?: "archive" | "delete";
 }): Promise<SwitchResult> {
   return call("switch_account", args as unknown as Record<string, unknown>);
 }

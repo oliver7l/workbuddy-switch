@@ -20,6 +20,7 @@ use serde_json::{json, Value};
 
 use crate::modules::account;
 use crate::modules::auth_file;
+use crate::modules::overwrite;
 use crate::modules::process::{close_workbuddy, launch_workbuddy};
 use crate::modules::session::{self, SessionPaths, SyncSelection};
 use crate::modules::session_link::{
@@ -30,11 +31,13 @@ use crate::modules::variant::WbVariant;
 /// 切换进度回调（宿主注入，如 Tauri `app.emit` 或 HTTP 进度缓存）。
 pub type ProgressFn = Box<dyn Fn(&str) + Send + Sync>;
 
-/// `restart=false` 携带会话写入意图时的拒绝文案（复制/同步各自一条）。
+/// `restart=false` 携带会话写入意图时的拒绝文案（复制/同步/覆盖各一条）。
 pub const COPY_WITHOUT_RESTART_MESSAGE: &str =
     "本次切换未重启 WorkBuddy（restart=false），已拒绝会话复制请求；如需复制请勾选重启切换";
 pub const SYNC_WITHOUT_RESTART_MESSAGE: &str =
     "本次切换未重启 WorkBuddy（restart=false），已拒绝会话同步请求；如需同步请勾选重启切换";
+pub const OVERWRITE_WITHOUT_RESTART_MESSAGE: &str =
+    "本次切换未重启 WorkBuddy（restart=false），已拒绝会话覆盖请求；如需覆盖请勾选重启切换";
 
 /// 恢复报告里是否存在阻碍启动的问题：未恢复一致的中间产物必须先处理。
 ///
@@ -121,7 +124,8 @@ fn unfinished_writes_detail(writes: &[Operation]) -> String {
 fn reject_session_writes_without_restart(
     has_copy: bool,
     has_sync: bool,
-) -> (Option<Value>, Option<Value>) {
+    has_overwrite: bool,
+) -> (Option<Value>, Option<Value>, Option<String>) {
     let copy = has_copy.then(|| json!({ "error": COPY_WITHOUT_RESTART_MESSAGE }));
     let sync = has_sync.then(|| {
         json!({
@@ -130,14 +134,20 @@ fn reject_session_writes_without_restart(
             "errors": [{ "error": SYNC_WITHOUT_RESTART_MESSAGE }],
         })
     });
-    (copy, sync)
+    let overwrite_error = has_overwrite.then(|| OVERWRITE_WITHOUT_RESTART_MESSAGE.to_string());
+    (copy, sync, overwrite_error)
 }
 
 /// 切换账号。
 ///
 /// `copy_session_ids` 非空时按路径 B 复制勾选会话（新 id，云端可同步）；
 /// `sync_selections` 非空时把来源账号的新增内容同步到目标账号的关联会话（保留目标
-/// sessionId、标题与自定义标题）。两者共用同一把档位操作锁，顺序执行、不重复写入。
+/// sessionId、标题与自定义标题）。两者共用同一把档位锁，顺序执行、不重复写入。
+///
+/// `overwrite_mode` 为 `Some("archive")`（默认，可逆）或 `Some("delete")`（彻底，
+/// 不可逆）时，先把目标账号的既有会话整包清理（软删 + 云端归档/删除）再执行复制，
+/// 实现「目标账号会话列表 = 当前账号会话照搬」。⚠️ 覆盖必须在复制**之前**跑：
+/// 覆盖只清理执行时刻的活跃会话，复制新写入的行不会被本轮清理波及。
 pub fn switch_account(
     progress_fn: Option<&ProgressFn>,
     account_id: &str,
@@ -145,6 +155,7 @@ pub fn switch_account(
     share_sessions: bool,
     copy_session_ids: &[String],
     sync_selections: &[SyncSelection],
+    overwrite_mode: Option<&str>,
 ) -> Result<Value, String> {
     let progress = |message: &str| {
         eprintln!("[switch] progress: {message}");
@@ -163,6 +174,8 @@ pub fn switch_account(
     let mut copy_report: Option<Value> = None;
     let mut session_report: Option<Value> = None;
     let mut sync_report: Option<Value> = None;
+    let mut overwrite_report: Option<Value> = None;
+    let mut overwrite_error: Option<String> = None;
     let mut recovery_report: Option<Value> = None;
     if restart {
         progress("正在关闭 WorkBuddy…");
@@ -189,12 +202,42 @@ pub fn switch_account(
         }
         // 本次是否请求了会话写入；同时记下写入前已存在的未完成记录，供写入后比对。
         let ops_paths = SessionPaths::for_variant(variant);
-        let attempts_session_writes = !copy_session_ids.is_empty() || !sync_selections.is_empty();
+        let attempts_session_writes =
+            !copy_session_ids.is_empty() || !sync_selections.is_empty() || overwrite_mode.is_some();
         let pending_before = if attempts_session_writes {
             pending_operation_ids(&ops_paths, variant)
         } else {
             BTreeSet::new()
         };
+        // 覆盖必须在复制之前：先清理目标账号的既有会话，再复制来源会话进来，
+        // 新写入的行才不会被本轮清理波及。
+        if let Some(mode) = overwrite_mode {
+            progress(if mode == overwrite::OVERWRITE_MODE_DELETE {
+                "正在清空目标账号的会话（删除模式，云端不可逆）…"
+            } else {
+                "正在清空目标账号的会话（归档模式，可恢复）…"
+            });
+            match overwrite::overwrite_target_sessions_with_progress(
+                &acc,
+                mode,
+                Some(&|message: &str| progress(message)),
+            ) {
+                Ok(report) => overwrite_report = Some(report),
+                // 档位锁被占用或无法建立互斥：可能另有会话写入正在进行，
+                // 不能当成普通失败后继续写认证并启动 App（与复制/同步同口径）。
+                Err(error)
+                    if error.starts_with(LOCK_BUSY_MESSAGE_PREFIX)
+                        || error.starts_with(LOCK_UNAVAILABLE_MESSAGE_PREFIX) =>
+                {
+                    return Err(format!(
+                        "无法独占会话操作（{error}），已暂停切换与启动 WorkBuddy；请稍后重试"
+                    ));
+                }
+                Err(error) => {
+                    overwrite_error = Some(error);
+                }
+            }
+        }
         if !copy_session_ids.is_empty() {
             progress("正在复制会话到目标账号…");
             // 复制失败本身只记进报告、不阻断切换；但若本次留下了未完成的写入，
@@ -263,12 +306,14 @@ pub fn switch_account(
     } else {
         // restart=false 表示本次不做任何会话写入；携带写入意图时显式拒绝该会话操作，
         // 不能静默丢弃（design §4.1）。
-        let (copy, sync) = reject_session_writes_without_restart(
+        let (copy, sync, overwrite_err) = reject_session_writes_without_restart(
             !copy_session_ids.is_empty(),
             !sync_selections.is_empty(),
+            overwrite_mode.is_some(),
         );
         copy_report = copy;
         sync_report = sync;
+        overwrite_error = overwrite_err;
     }
     progress("正在写入认证文件…");
     auth_file::write_account_to_auth_file(&acc, variant)?;
@@ -295,6 +340,12 @@ pub fn switch_account(
     }
     if let Some(r) = recovery_report {
         result["sessionRecovery"] = r;
+    }
+    if let Some(r) = overwrite_report {
+        result["sessionOverwrite"] = r;
+    }
+    if let Some(e) = overwrite_error {
+        result["sessionOverwriteError"] = json!(e);
     }
     Ok(result)
 }
@@ -493,7 +544,7 @@ mod tests {
     /// restart=false 携带同步意图 → 与复制同样显式拒绝，且契约与成功路径同形。
     #[test]
     fn session_writes_without_restart_are_rejected_explicitly() {
-        let (copy, sync) = reject_session_writes_without_restart(false, true);
+        let (copy, sync, _overwrite) = reject_session_writes_without_restart(false, true, false);
         assert!(copy.is_none());
         let sync = sync.expect("携带同步意图必须给出拒绝报告");
         assert_eq!(sync["errors"][0]["error"], SYNC_WITHOUT_RESTART_MESSAGE);
@@ -504,16 +555,23 @@ mod tests {
         assert!(sync["synced"].as_array().unwrap().is_empty());
         assert!(sync["skipped"].as_array().unwrap().is_empty());
 
-        // 两种意图同时存在：各自拒绝，互不吞掉。
-        let (copy, sync) = reject_session_writes_without_restart(true, true);
-        assert_eq!(copy.unwrap()["error"], COPY_WITHOUT_RESTART_MESSAGE);
+        // 覆盖意图被显式拒绝（错误走独立字段，报告路径与成功同形）。
+        let (copy, sync, overwrite) = reject_session_writes_without_restart(false, false, true);
+        assert!(copy.is_none() && sync.is_none());
         assert_eq!(
-            sync.unwrap()["errors"][0]["error"],
-            SYNC_WITHOUT_RESTART_MESSAGE
+            overwrite.as_deref(),
+            Some(OVERWRITE_WITHOUT_RESTART_MESSAGE)
         );
+        assert!(overwrite.as_deref().unwrap().contains("restart=false"));
+
+        // 两种意图同时存在：各自拒绝，互不吞掉。
+        let (copy, sync, overwrite) = reject_session_writes_without_restart(true, true, true);
+        assert_eq!(copy.unwrap()["error"], COPY_WITHOUT_RESTART_MESSAGE);
+        assert!(sync.is_some());
+        assert!(overwrite.is_some());
 
         // 都没有写入意图：不产生任何报告（保持原有语义）。
-        let (copy, sync) = reject_session_writes_without_restart(false, false);
-        assert!(copy.is_none() && sync.is_none());
+        let (copy, sync, overwrite) = reject_session_writes_without_restart(false, false, false);
+        assert!(copy.is_none() && sync.is_none() && overwrite.is_none());
     }
 }

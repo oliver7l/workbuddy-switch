@@ -430,6 +430,19 @@ export interface SwitchResult {
   /** 本次的会话同步报告（未勾选同步时不返回）；含跳过与失败原因，不只是成功数。 */
   sessionSync?: SessionSyncReport;
   sessionRecovery?: SessionRecoveryReport;
+  /** 覆盖目标账号会话的报告（未勾选覆盖时不返回）。 */
+  sessionOverwrite?: {
+    mode: "archive" | "delete";
+    targetUid: string;
+    scanned: number;
+    softDeleted: { id: string; title: string | null; conversationId?: string; cloud?: string }[];
+    cloudSkipped: { id: string; reason: string }[];
+    cloudFailed: { id: string; conversationId: string; error: string }[];
+    mappingRemoved: number;
+    backup: { dir: string; workbuddyDb: string; edgeSyncDb?: string };
+  };
+  /** 覆盖请求因 restart=false 被拒绝等场景下的错误文案。 */
+  sessionOverwriteError?: string;
 }
 
 export interface CheckinConfig {

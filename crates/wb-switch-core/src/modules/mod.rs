@@ -18,6 +18,7 @@ pub mod linux_keyring;
 pub mod notifications;
 pub mod oauth;
 pub mod official_usage;
+pub mod overwrite;
 pub mod process;
 pub mod rate_limit_events;
 pub mod rate_limit_hook;

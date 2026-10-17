@@ -1,5 +1,3 @@
-#![cfg(target_os = "macos")]
-
 //! macOS 第二道单实例原子锁（`flock`），兜底 `tauri-plugin-single-instance` 的
 //! socket `connect`→unlink→`bind` 竞态。
 //!
