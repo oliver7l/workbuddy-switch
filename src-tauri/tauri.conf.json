@@ -50,7 +50,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEU2QzJCQzY2N0ZDMjFENUYKUldSZkhjSi9acnpDNWpVaXlGQ1ViclEramlpN25iSVMxS3R5d0FlenlLZHBPWnl5ajAyK0hvN3IK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEQ2NjY4Q0JCQTVEQkM2NkEKUldScXh0dWx1NHhtMW9HbDJzQlhtSllNVkEwSzhrWVlUZ3JtNHBDZHd2KzhYRHMvZkxNSXl5RFIK",
       "endpoints": [
         "https://github.com/oliver7l/workbuddy-switch/releases/latest/download/latest.json",
         "https://github.com/oliver7l/workbuddy-switch/releases/latest/download/latest-{{target}}-{{arch}}.json",
