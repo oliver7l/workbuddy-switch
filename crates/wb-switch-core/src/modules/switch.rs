@@ -210,8 +210,9 @@ pub fn switch_account(
             BTreeSet::new()
         };
         // 覆盖必须在复制之前：先清理目标账号的既有会话，再复制来源会话进来，
-        // 新写入的行才不会被本轮清理波及。
+        // 新写入的行才不会被本轮清理波及。来源 uid（当前登录态）供定时任务照搬。
         if let Some(mode) = overwrite_mode {
+            let source_uid = session::current_user_uid(variant);
             progress(if mode == overwrite::OVERWRITE_MODE_DELETE {
                 "正在清空目标账号的会话（删除模式，云端不可逆）…"
             } else {
@@ -220,6 +221,7 @@ pub fn switch_account(
             match overwrite::overwrite_target_sessions_with_progress(
                 &acc,
                 mode,
+                source_uid.as_deref(),
                 Some(&|message: &str| progress(message)),
             ) {
                 Ok(report) => overwrite_report = Some(report),
