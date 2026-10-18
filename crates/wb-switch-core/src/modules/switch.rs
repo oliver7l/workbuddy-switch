@@ -262,6 +262,52 @@ pub fn switch_account(
                 },
             );
         }
+        // 照搬模式收尾：把来源账号的侧栏快照（含置顶与侧栏排序）按复制 id 映射
+        // 迁移到目标账号名下——复制的会话是新 id，快照条目必须跟着改写。
+        if overwrite_mode.is_some() {
+            let mut sidebar_id_map = std::collections::BTreeMap::new();
+            if let Some(report) = &copy_report {
+                if let Some(items) = report.get("copied").and_then(Value::as_array) {
+                    for item in items {
+                        if let (Some(src), Some(dst)) = (
+                            item.get("id").and_then(Value::as_str),
+                            item.get("newId").and_then(Value::as_str),
+                        ) {
+                            sidebar_id_map.insert(src.to_string(), dst.to_string());
+                        }
+                    }
+                }
+            }
+            if !sidebar_id_map.is_empty() {
+                if let Some(source_uid) = session::current_user_uid(variant) {
+                    let target_uid = acc
+                        .get("uid")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string();
+                    if !target_uid.is_empty() {
+                        progress("正在迁移侧栏置顶与排序…");
+                        match overwrite::take_over_sidebar_snapshot(
+                            &ops_paths,
+                            &source_uid,
+                            &target_uid,
+                            &sidebar_id_map,
+                        ) {
+                            Ok(sidebar_report) => {
+                                if let Some(report) = overwrite_report.as_mut() {
+                                    report["sidebar"] = sidebar_report;
+                                }
+                            }
+                            Err(error) => {
+                                if let Some(report) = overwrite_report.as_mut() {
+                                    report["sidebarError"] = json!(error);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
         if !sync_selections.is_empty() {
             // 同步与复制顺序执行（同一把档位锁），不重复写入。
             progress("正在同步会话到目标账号…");

@@ -389,6 +389,63 @@ fn take_over_automations(
     })
 }
 
+/// 照搬收尾：把来源账号的侧栏快照（sidebar-list-snapshot.json，含置顶
+/// isPinned 与侧栏排序）迁移到目标账号名下。
+///
+/// 会话在复制时生成新 id，快照里的条目按 id 映射表（源 id → 新 id）改写；
+/// 没有映射的条目（未勾选复制的会话）直接丢弃——它们在目标账号不存在。
+/// 只处理 `items[].id` 能命中的条目；无 `id` 的条目原样保留。
+pub fn take_over_sidebar_snapshot(
+    paths: &SessionPaths,
+    source_uid: &str,
+    target_uid: &str,
+    id_map: &std::collections::BTreeMap<String, String>,
+) -> Result<Value, String> {
+    let src = paths
+        .data_root
+        .join(source_uid)
+        .join("sidebar-list-snapshot.json");
+    if !src.is_file() {
+        return Ok(json!({ "skipped": "来源账号没有侧栏快照", "copied": 0 }));
+    }
+    let raw = std::fs::read_to_string(&src).map_err(|error| format!("读侧栏快照失败：{error}"))?;
+    let mut snap: Value =
+        serde_json::from_str(&raw).map_err(|error| format!("侧栏快照解析失败：{error}"))?;
+    let Some(items) = snap.get_mut("items").and_then(Value::as_array_mut) else {
+        return Ok(json!({ "skipped": "快照缺少 items", "copied": 0 }));
+    };
+    let mut remapped = 0usize;
+    let mut dropped = 0usize;
+    items.retain_mut(|item| {
+        match item.get("id").and_then(Value::as_str) {
+            Some(id) => match id_map.get(id) {
+                Some(new_id) => {
+                    item["id"] = json!(new_id);
+                    remapped += 1;
+                    true
+                }
+                None => {
+                    dropped += 1;
+                    false
+                }
+            },
+            // 无 id 的条目（非会话项）原样保留。
+            None => true,
+        }
+    });
+    snap["savedAt"] = json!(config::now_ms());
+    let target_dir = paths.data_root.join(target_uid);
+    std::fs::create_dir_all(&target_dir)
+        .map_err(|error| format!("目标账号目录创建失败：{error}"))?;
+    let dest = target_dir.join("sidebar-list-snapshot.json");
+    std::fs::write(
+        &dest,
+        serde_json::to_string(&snap).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| format!("写目标侧栏快照失败：{error}"))?;
+    Ok(json!({ "copied": remapped, "dropped": dropped, "skipped": Value::Null }))
+}
+
 /// 归一化并校验模式参数；接受空串按默认归档处理。
 fn normalize_mode(mode: &str) -> Result<&'static str, String> {
     match mode.trim() {
@@ -1037,5 +1094,53 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM automations", [], |row| row.get(0))
             .unwrap();
         assert_eq!(left, 1, "未提供来源时定时任务原样保留");
+    }
+
+    /// 侧栏快照迁移：置顶条目按复制映射改写 id，未复制的条目丢弃。
+    #[test]
+    fn sidebar_snapshot_migration_remaps_ids() {
+        let tmp = TempDir::new("sidebar");
+        let paths = setup_paths(&tmp.0);
+        seed_sessions(&paths);
+        let source_dir = paths.data_root.join(UID_A);
+        std::fs::create_dir_all(&source_dir).unwrap();
+        std::fs::write(
+            source_dir.join("sidebar-list-snapshot.json"),
+            r#"{"version":3,"savedAt":1,"items":[
+                {"id":"sess-src-1","title":"置顶会话","isPinned":true},
+                {"id":"sess-src-2","title":"没复制的","isPinned":true},
+                {"id":"sess-src-3","title":"没复制的普通","isPinned":false}
+            ]}"#,
+        )
+        .unwrap();
+
+        let mut id_map = std::collections::BTreeMap::new();
+        id_map.insert("sess-src-1".to_string(), "sess-new-1".to_string());
+
+        let report = take_over_sidebar_snapshot(&paths, UID_A, UID_B, &id_map).unwrap();
+        assert_eq!(report["copied"].as_i64(), Some(1));
+        assert_eq!(report["dropped"].as_i64(), Some(2));
+
+        let dest = paths
+            .data_root
+            .join(UID_B)
+            .join("sidebar-list-snapshot.json");
+        let snap: Value = serde_json::from_str(&std::fs::read_to_string(&dest).unwrap()).unwrap();
+        let items = snap["items"].as_array().unwrap();
+        assert_eq!(items.len(), 1, "未映射的条目被丢弃");
+        assert_eq!(items[0]["id"], "sess-new-1");
+        assert_eq!(items[0]["isPinned"], true);
+    }
+
+    /// 来源没有快照时跳过而不报错。
+    #[test]
+    fn sidebar_snapshot_skips_when_source_missing() {
+        let tmp = TempDir::new("sidebar-missing");
+        let paths = setup_paths(&tmp.0);
+        seed_sessions(&paths);
+        let mut id_map = std::collections::BTreeMap::new();
+        id_map.insert("a".to_string(), "b".to_string());
+        let report = take_over_sidebar_snapshot(&paths, UID_A, UID_B, &id_map).unwrap();
+        assert!(report["skipped"].is_string());
     }
 }
