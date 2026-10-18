@@ -602,7 +602,8 @@ export function SwitchAccountDialog({ open, onOpenChange, account, onDone }: Pro
             <div className="min-h-0 space-y-2 overflow-y-auto">{copyTabContent}</div>
           )}
 
-          {/* 覆盖目标账号会话：默认关闭；启用后默认归档模式（可恢复），删除模式不可逆。 */}
+          {/* 覆盖目标账号会话（照搬模式）：默认关闭；启用后自动全选当前账号会话，
+              并把目标账号定时任务一并覆盖成当前账号的任务集。 */}
           <div className="shrink-0 rounded-md border p-3">
             <label className="flex cursor-pointer items-center gap-2 text-sm font-medium">
               <input
@@ -610,9 +611,15 @@ export function SwitchAccountDialog({ open, onOpenChange, account, onDone }: Pro
                 className="size-3.5 cursor-pointer accent-primary"
                 checked={overwriteEnabled}
                 disabled={busy}
-                onChange={(e) => setOverwriteEnabled(e.target.checked)}
+                onChange={(e) => {
+                  setOverwriteEnabled(e.target.checked);
+                  // 照搬模式：启用时自动全选当前账号的全部会话（可再手动调整）。
+                  if (e.target.checked) {
+                    setSelected(new Set(sessions.map((s) => s.id)));
+                  }
+                }}
               />
-              覆盖目标账号的会话列表（先清空旧会话）
+              照搬模式：清空目标账号旧会话与定时任务，复制当前账号全部会话
             </label>
             {overwriteEnabled && (
               <div className="mt-2 space-y-1.5 pl-6 text-xs text-muted-foreground">
@@ -639,8 +646,9 @@ export function SwitchAccountDialog({ open, onOpenChange, account, onDone }: Pro
                   <span className="text-destructive">删除旧会话（不可逆，所有设备同步消失）</span>
                 </label>
                 <p>
-                  切换时先{overwriteMode === "delete" ? "删除" : "归档"}目标账号的全部现有会话；
-                  如需照搬当前账号的全部会话，请在「复制会话」里全选。
+                  已自动全选当前账号的 {sessions.length} 个会话（可在「复制会话」里调整）；
+                  目标账号的定时任务也会一并覆盖成当前账号的任务集（旧任务按所选模式
+                  {overwriteMode === "delete" ? "删除" : "归档"}，执行前自动备份整个数据库）。
                 </p>
               </div>
             )}

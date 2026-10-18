@@ -31,7 +31,8 @@ use crate::modules::config;
 use crate::modules::process;
 use crate::modules::refresh;
 use crate::modules::session::{
-    backup_workbuddy_db, edge_sync_db_path, open_db, session_copy_supported_at, SessionPaths,
+    backup_workbuddy_db, edge_sync_db_path, open_db, session_copy_supported_at, table_exists,
+    SessionPaths,
 };
 use crate::modules::variant::WbVariant;
 
@@ -54,16 +55,21 @@ pub const OVERWRITE_UNSUPPORTED: &str = "该档位暂不支持会话覆盖";
 /// 单测注入假执行器，生产路径走 [`cloud_archive_or_delete`]。
 pub type CloudExecutor<'a> = &'a dyn Fn(&str, &str) -> Result<(), String>;
 
-/// 本地软删 + 云端清理都完成后交给宿主的报告形状：
-/// `{ mode, targetUid, scanned, softDeleted, cloudSkipped, cloudFailed, mappingRemoved, backup }`。
+/// 本地软删 + 云端清理 + 定时任务照搬完成后交给宿主的报告形状：
+/// `{ mode, targetUid, scanned, softDeleted, cloudSkipped, cloudFailed, mappingRemoved, automations, backup }`。
 pub fn overwrite_target_sessions(target_acc: &Value, mode: &str) -> Result<Value, String> {
-    overwrite_target_sessions_with_progress(target_acc, mode, None)
+    overwrite_target_sessions_with_progress(target_acc, mode, None, None)
 }
 
 /// 带进度回调的覆盖入口（switch.rs 编排时透传切换进度，宿主展示用）。
+///
+/// `source_uid` = 切换前的当前账号（照搬来源）：提供时，目标账号的定时任务
+/// （automations 表）会被单向覆盖成该账号的激活任务集——这是「照搬模式」的一部分；
+/// 缺省 None 时只做会话覆盖，不碰 automations。
 pub fn overwrite_target_sessions_with_progress(
     target_acc: &Value,
     mode: &str,
+    source_uid: Option<&str>,
     progress: Option<&dyn Fn(&str)>,
 ) -> Result<Value, String> {
     let variant = account::variant_of(target_acc);
@@ -81,6 +87,7 @@ pub fn overwrite_target_sessions_with_progress(
         &paths,
         variant,
         target_acc,
+        source_uid,
         mode,
         process::is_workbuddy_running,
         Some(&cloud),
@@ -89,10 +96,12 @@ pub fn overwrite_target_sessions_with_progress(
 }
 
 /// 可注入入口（单测注入临时目录、假运行探针与假云端执行器，不触碰真实路径）。
+#[allow(clippy::too_many_arguments)]
 fn overwrite_target_sessions_at(
     paths: &SessionPaths,
     variant: WbVariant,
     target_acc: &Value,
+    source_uid: Option<&str>,
     mode: &str,
     is_app_running: impl Fn(WbVariant) -> bool,
     cloud: Option<CloudExecutor<'_>>,
@@ -233,6 +242,12 @@ fn overwrite_target_sessions_at(
         }
     }
 
+    // 定时任务照搬（照搬模式）：目标账号的激活任务集单向覆盖成来源账号的
+    // 激活任务集。源行复制为新 id（owner 改为目标账号）；目标原有激活行按
+    // 模式软删（归档）或硬删（删除）。automations 是纯本地表（无云端副本），
+    // 且整个 workbuddy.db 已在 backup 快照中，可整体恢复。
+    let automations_report = take_over_automations(&conn, source_uid, &target_uid, mode, progress);
+
     let report = json!({
         "mode": mode,
         "targetUid": target_uid,
@@ -241,9 +256,137 @@ fn overwrite_target_sessions_at(
         "cloudSkipped": cloud_skipped,
         "cloudFailed": cloud_failed,
         "mappingRemoved": mapping_removed,
+        "automations": automations_report,
         "backup": backup,
     });
     Ok(report)
+}
+
+/// automations 表复制时保留的列（id 重新生成、owner_user_id 换目标、
+/// deleted_at 不复制——新行一律是激活态）。
+const AUTOMATION_COPY_COLUMNS: &[&str] = &[
+    "name",
+    "prompt",
+    "status",
+    "schedule_type",
+    "next_run_at",
+    "last_run_at",
+    "cwds",
+    "rrule",
+    "scheduled_at",
+    "valid_from",
+    "valid_until",
+    "model_id",
+    "model_is_thinking",
+    "push_to_wechat",
+    "created_at",
+    "updated_at",
+    "skills_json",
+    "push_to_wecom_bot",
+    "wecom_bot_source",
+    "owner_status",
+    "owner_source",
+    "expert_id",
+    "expert_marketplace",
+    "connector_ids_json",
+    "permission_mode",
+    "context_window",
+    "reasoning_effort",
+    "workspace_scope",
+    "wecom_bot_chat_id",
+];
+
+/// 定时任务单向照搬：目标激活任务集 ← 来源激活任务集。
+fn take_over_automations(
+    conn: &Connection,
+    source_uid: Option<&str>,
+    target_uid: &str,
+    mode: &str,
+    progress: Option<&dyn Fn(&str)>,
+) -> Value {
+    let mut report =
+        json!({ "sourceActive": 0, "targetRemoved": 0, "copied": 0, "skipped": Value::Null });
+    let Some(source_uid) = source_uid.filter(|s| !s.is_empty()) else {
+        report["skipped"] = json!("未提供来源账号，跳过定时任务照搬");
+        return report;
+    };
+    if !table_exists(conn, "automations") {
+        report["skipped"] = json!("automations 表不存在，跳过");
+        return report;
+    }
+    let now_ms = config::now_ms();
+    if let Some(p) = progress {
+        p("正在照搬定时任务（目标任务集 ← 来源账号）…");
+    }
+
+    // 目标账号的激活行：归档模式软删，删除模式硬删。
+    let removed = if mode == OVERWRITE_MODE_DELETE {
+        conn.execute(
+            "DELETE FROM automations WHERE owner_user_id = ?1 AND deleted_at IS NULL",
+            [target_uid],
+        )
+        .unwrap_or(0)
+    } else {
+        conn.execute(
+            "UPDATE automations SET deleted_at = ?1, updated_at = ?1 \
+             WHERE owner_user_id = ?2 AND deleted_at IS NULL",
+            rusqlite::params![now_ms, target_uid],
+        )
+        .unwrap_or(0)
+    };
+
+    // 读来源激活行（按列名取值，列集合与目标表一致）。
+    let select_sql = format!(
+        "SELECT id, {} FROM automations WHERE owner_user_id = ?1 AND deleted_at IS NULL",
+        AUTOMATION_COPY_COLUMNS.join(", ")
+    );
+    let mut source_rows: Vec<Vec<rusqlite::types::Value>> = Vec::new();
+    if let Ok(mut stmt) = conn.prepare(&select_sql) {
+        if let Ok(rows) = stmt.query_map([source_uid], |row| {
+            let mut values = Vec::with_capacity(AUTOMATION_COPY_COLUMNS.len());
+            for col in AUTOMATION_COPY_COLUMNS {
+                values.push(row.get(*col)?);
+            }
+            Ok(values)
+        }) {
+            for row in rows.flatten() {
+                source_rows.push(row);
+            }
+        }
+    }
+
+    // 逐行插入新 id 的副本（owner = 目标账号）。
+    let insert_sql = format!(
+        "INSERT INTO automations (id, {}, owner_user_id) VALUES (?1, {}, ?{})",
+        AUTOMATION_COPY_COLUMNS.join(", "),
+        (2..=1 + AUTOMATION_COPY_COLUMNS.len())
+            .map(|i| format!("?{i}"))
+            .collect::<Vec<_>>()
+            .join(", "),
+        AUTOMATION_COPY_COLUMNS.len() + 2
+    );
+    let mut copied = 0usize;
+    for (index, values) in source_rows.iter().enumerate() {
+        let new_id = format!("automation-{}-{}", config::now_ms(), index + 1);
+        let mut params: Vec<rusqlite::types::Value> =
+            Vec::with_capacity(2 + AUTOMATION_COPY_COLUMNS.len());
+        params.push(rusqlite::types::Value::Text(new_id));
+        params.extend(values.iter().cloned());
+        params.push(rusqlite::types::Value::Text(target_uid.to_string()));
+        if conn
+            .execute(&insert_sql, rusqlite::params_from_iter(params))
+            .is_ok()
+        {
+            copied += 1;
+        }
+    }
+
+    json!({
+        "sourceActive": source_rows.len(),
+        "targetRemoved": removed,
+        "copied": copied,
+        "skipped": Value::Null,
+    })
 }
 
 /// 归一化并校验模式参数；接受空串按默认归档处理。
@@ -545,6 +688,7 @@ mod tests {
             &paths,
             WbVariant::Cn,
             &account_for(UID_B),
+            None,
             OVERWRITE_MODE_ARCHIVE,
             not_running,
             Some(&cloud),
@@ -611,6 +755,7 @@ mod tests {
             &paths,
             WbVariant::Cn,
             &account_for(UID_B),
+            None,
             OVERWRITE_MODE_DELETE,
             not_running,
             Some(&cloud),
@@ -660,6 +805,7 @@ mod tests {
             &paths,
             WbVariant::Cn,
             &account_for(UID_B),
+            None,
             OVERWRITE_MODE_DELETE,
             not_running,
             Some(&failing),
@@ -691,6 +837,7 @@ mod tests {
             &paths,
             WbVariant::Cn,
             &account_for(UID_B),
+            None,
             "replace",
             not_running,
             None,
@@ -703,6 +850,7 @@ mod tests {
             &paths,
             WbVariant::Cn,
             &account_for(UID_B),
+            None,
             OVERWRITE_MODE_ARCHIVE,
             |_| true,
             None,
@@ -721,6 +869,7 @@ mod tests {
             &paths,
             WbVariant::Cn,
             &json!({ "nickname": "没 uid" }),
+            None,
             OVERWRITE_MODE_ARCHIVE,
             not_running,
             None,
@@ -739,6 +888,7 @@ mod tests {
             &paths,
             WbVariant::Cn,
             &account_for(UID_B),
+            None,
             OVERWRITE_MODE_ARCHIVE,
             not_running,
             None,
@@ -763,6 +913,7 @@ mod tests {
             &paths,
             WbVariant::Cn,
             &account_for(UID_B),
+            None,
             "",
             not_running,
             Some(&cloud),
@@ -770,5 +921,121 @@ mod tests {
         )
         .unwrap();
         assert_eq!(report["mode"], OVERWRITE_MODE_ARCHIVE);
+    }
+
+    /// 照搬模式：来源账号的激活定时任务单向覆盖目标账号的任务集。
+    #[test]
+    fn automations_takeover_copies_source_active_set() {
+        let tmp = TempDir::new("automations");
+        let paths = setup_paths(&tmp.0);
+        seed_sessions(&paths);
+        {
+            let conn = open_db(&paths.workbuddy_db(), false).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE automations (
+                    id TEXT PRIMARY KEY, name TEXT, prompt TEXT, status TEXT,
+                    schedule_type TEXT, next_run_at INTEGER, last_run_at INTEGER,
+                    cwds TEXT, rrule TEXT, scheduled_at INTEGER, valid_from INTEGER,
+                    valid_until INTEGER, model_id TEXT, model_is_thinking INTEGER,
+                    push_to_wechat INTEGER, created_at INTEGER, updated_at INTEGER,
+                    skills_json TEXT, push_to_wecom_bot INTEGER, wecom_bot_source TEXT,
+                    owner_user_id TEXT, owner_status TEXT, owner_source TEXT,
+                    expert_id TEXT, expert_marketplace TEXT, connector_ids_json TEXT,
+                    permission_mode TEXT, deleted_at INTEGER, context_window TEXT,
+                    reasoning_effort TEXT, workspace_scope TEXT, wecom_bot_chat_id TEXT
+                );",
+            )
+            .unwrap();
+            let ins = |conn: &Connection, id: &str, owner: &str, name: &str| {
+                conn.execute(
+                    "INSERT INTO automations (id, name, owner_user_id) VALUES (?1, ?2, ?3)",
+                    rusqlite::params![id, name, owner],
+                )
+                .unwrap();
+            };
+            ins(&conn, "a-src-1", UID_A, "A 的任务1");
+            ins(&conn, "a-src-2", UID_A, "A 的任务2");
+            ins(&conn, "b-old-1", UID_B, "B 的旧任务1");
+            ins(&conn, "b-old-2", UID_B, "B 的旧任务2");
+            ins(&conn, "b-old-3", UID_B, "B 的旧任务3");
+        }
+
+        let log = CloudLog::default();
+        let cloud = fake_cloud_ok(&log);
+        let report = overwrite_target_sessions_at(
+            &paths,
+            WbVariant::Cn,
+            &account_for(UID_B),
+            Some(UID_A),
+            OVERWRITE_MODE_ARCHIVE,
+            not_running,
+            Some(&cloud),
+            None,
+        )
+        .unwrap();
+
+        let am = &report["automations"];
+        assert_eq!(am["sourceActive"].as_i64(), Some(2), "来源激活任务 2 条");
+        assert_eq!(
+            am["targetRemoved"].as_i64(),
+            Some(3),
+            "目标激活任务 3 条被归档"
+        );
+        assert_eq!(am["copied"].as_i64(), Some(2), "复制 2 条到目标名下");
+
+        let conn = open_db(&paths.workbuddy_db(), false).unwrap();
+        let (target_active, target_deleted, source_untouched): (i64, i64, i64) = conn
+            .query_row(
+                "SELECT
+                   SUM(CASE WHEN owner_user_id=?1 AND deleted_at IS NULL THEN 1 ELSE 0 END),
+                   SUM(CASE WHEN owner_user_id=?1 AND deleted_at>0 THEN 1 ELSE 0 END),
+                   SUM(CASE WHEN owner_user_id=?2 AND deleted_at IS NULL THEN 1 ELSE 0 END)
+                 FROM automations",
+                rusqlite::params![UID_B, UID_A],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            (target_active, target_deleted, source_untouched),
+            (2, 3, 2),
+            "目标=来源激活集副本；旧任务归档可恢复；来源行原样保留"
+        );
+    }
+
+    /// 未提供来源 uid 时不碰 automations（保持旧行为兼容）。
+    #[test]
+    fn automations_untouched_without_source_uid() {
+        let tmp = TempDir::new("no-source");
+        let paths = setup_paths(&tmp.0);
+        seed_sessions(&paths);
+        {
+            let conn = open_db(&paths.workbuddy_db(), false).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE automations (id TEXT PRIMARY KEY, name TEXT, owner_user_id TEXT, deleted_at INTEGER);",
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO automations (id, name, owner_user_id) VALUES ('b-1', '任务', ?1)",
+                rusqlite::params![UID_B],
+            )
+            .unwrap();
+        }
+        let report = overwrite_target_sessions_at(
+            &paths,
+            WbVariant::Cn,
+            &account_for(UID_B),
+            None,
+            OVERWRITE_MODE_ARCHIVE,
+            not_running,
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(report["automations"]["skipped"].is_string());
+        let conn = open_db(&paths.workbuddy_db(), false).unwrap();
+        let left: i64 = conn
+            .query_row("SELECT COUNT(*) FROM automations", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(left, 1, "未提供来源时定时任务原样保留");
     }
 }
